@@ -22,16 +22,45 @@ void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-void zc_chat(){
+extern char _binary_museo_ttf_start[];
+extern char _binary_museo_ttf_end[];
+
+
+
+void zc_chat(short x, short y){
+	igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
+	igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
+	igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+
+
+	igTextUnformatted("чат");
+
 	
+	igEnd();
 }
 
-void zc_voice(){
+void zc_voice(short x, short y){
+	igSetNextWindowSize((ImVec2){x*0.35, y*0.7}, NULL);
+	igSetNextWindowPos((ImVec2){0, 0}, NULL);
+	igBegin("v", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+
+	igTextUnformatted("войс");
+
+
 	
+	igEnd();
 }
 
-void zc_sw(){
+void zc_sw(short x, short y){
+	igSetNextWindowSize((ImVec2){x*0.35, y*0.3}, NULL);
+	igSetNextWindowPos((ImVec2){0, y*0.7}, NULL);
+	igBegin("s", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+
+	igTextUnformatted("св");
+
+
 	
+	igEnd();
 }
 
 /*
@@ -67,7 +96,21 @@ int main(int argc, char** argv) {
     igCreateContext(NULL);
     ImGuiIO* io = igGetIO();
     io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
 
+	ImFontAtlas* atlas = igGetIO()->Fonts;
+	const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
+
+	ImFont* myFont = ImFontAtlas_AddFontFromMemoryTTF(
+		atlas, 
+		_binary_museo_ttf_start, 
+		font_data_size, 
+		18.0f, 
+		NULL, 
+		ranges
+	);
+	//ImFont* font = ImFontAtlas_AddFontFromFileTTF(atlas, "C:\\Windows\\Fonts\\segoeui.ttf", 26.0f, NULL, NULL);
+	
     igStyleColorsDark(NULL);
 
     cImGui_ImplWin32_Init(hwnd);
@@ -102,12 +145,13 @@ int main(int argc, char** argv) {
         cImGui_ImplDX11_NewFrame();
         cImGui_ImplWin32_NewFrame();
         igNewFrame();
+		short x, y;
+		x=io->DisplaySize.x;
+		y=io->DisplaySize.y;
 
-
-		
-        
-
-
+		zc_chat(x, y);
+		zc_voice(x, y);
+		zc_sw(x, y);
 		
         igRender();
 

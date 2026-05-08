@@ -9,7 +9,7 @@ GLFW_LIB = libglfw3.a
 CFLAGS = -std=c17 -O3 -s -flto -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DWOLFSSL_USER_SETTINGS $(WOLFSSL_INC)
 		
 SRC = main.c sqlite3.c SHA512.c
-OBJS = $(SRC:.c=.o) 5.obj 4.obj
+OBJS = $(SRC:.c=.o) museo.o 5.obj 4.obj
 
 LIBS = $(DCIMGUI_LIB) $(WOLFSSL_LIB) -ld3d11 -ld3dcompiler -ldxgi -ldxguid -luser32 -lgdi32 -lshell32 -lws2_32 -lmsimg32 -lsetupapi -limm32 -lssp -lcrypt32 -ldwmapi -lstdc++
 
@@ -21,7 +21,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS) $(LIBS)
 	strip $(TARGET)
-	upx --best --ultra-brute $(TARGET)
+#	upx --best --ultra-brute $(TARGET)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
