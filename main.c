@@ -7,10 +7,12 @@
 #include <stdio.h>
 #include <Windows.h>
 #include <stdbool.h>
-
+#include <math.h>
 #include <tchar.h>
 #include <tchar.h>
-
+#define ITID ImTextureID
+// #define ImVec2_t(x, y) ((ImVec2_t){x, y})
+#define ImVec2(x, y) ((ImVec2){x, y})
 static ID3D11Device*            g_pd3dDevice = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
 static IDXGISwapChain*          g_pSwapChain = NULL;
@@ -25,17 +27,95 @@ extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wPara
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
 
+// структуы
 
+typedef struct {
+	uint32_t mid; // айди сообщения
+	uint16_t cid; // айди чата
+	uint16_t uid; // айди юзера
+	bool dost;    // доставлено ли сообщение
+	char time[16];// время с датой
+	union{ // тут может быть только одна из трех строк, шоб меньше памяти жрало
+		char text[4096];     // текст до 4кб 
+		ITID* img_ptr;       // указатель на фото
+		char* path;          // путь до документа на отправку/просмотр
+	} ctnt;
+	uint8_t type; // тип сообщения, чтобы правильно и быстро извлекать содержимое 
+} msg;
 
-void zc_chat(short x, short y){
+typedef struct {
+	uint16_t cid;        // айди чата
+	char name[32];       // название чата
+	ITID* ava_prt;       // указатель на аватарку чата
+	uint32_t ns;         // кол-во непрочитанных
+	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
+	uint32_t lmid;	     // айди последнего сообщения
+} chat;
+
+typedef struct {
+	char name[32];       // имя юзера
+	uint16_t uid;        // айди юзера
+	bool ver;            // важный бумажный
+	ITID* ava_ptr;       //	указатель на аватарку
+} user; 
+
+typedef struct {
+	char name[32]; // имя
+	uint16_t uid;  // айди юзера
+	uint64_t* hash;// хэш пароля
+	ITID* ava_ptr; // указатель на аватарку
+	bool ver;      // важный бумажный
+	char obn[16];  // дата и время синхронизации с сервером
+	/*
+надо:
+	сокеты
+	ссл
+	аудио
+	и прочее глобальное, что будет передаваться, как указатель на одну структуру в main
+	*/
+	
+} me;
+
+void zc_chat(short x, short y, chat* c){
 	igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
 	igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
 	igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
-
-
-	igTextUnformatted("чат");
-
+	float p_h;
+	float i_h;
+	ImVec2 t_s = igCalcTextSize(c->buf); 
+	float l_h = igGetTextLineHeight();
+	short l_c = ceil(t_s.y/l_h);
+	l_c = (l_c < 5 ? l_c : 5);
+	i_h = l_c*l_h + y*0.01f;
+	p_h = i_h + y*0.02f;
 	
+	/*
+
+
+	надо стили и расширение ввода сделать
+	
+
+	*/
+	igSetCursorPos((ImVec2){x*0.1, y*0.96 -p_h});
+    igDummy(ImVec2(0, 0));
+	// style
+	igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, (ImVec2){x*0.07, y*0.01});
+	igPushStyleColorImVec4(ImGuiCol_ChildBg, (ImVec4){0.125f, 0.133f, 0.145f, 1.0f});
+	igSetNextWindowPos((ImVec2){x*0.45, y*0.96 -p_h}, NULL);
+    if(igBeginChild("##p", ImVec2(x*0.45, p_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar)){
+		igSetNextItemWidth(x*0.4);
+		float _y = (p_h - i_h) * 0.5f;
+		igSetCursorPos((ImVec2){20, _y});
+		
+		if (igInputTextMultilineEx("##i", c->buf, 4096, ImVec2(x*0.386, i_h), ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_NoHorizontalScroll | ImGuiInputTextFlags_WordWrap, NULL, NULL)){
+			c->buf[0]='\0';
+
+
+		}
+	}
+	igEndChild();
+	igPopStyleVarEx(1);
+	igPopStyleColor();
 	igEnd();
 }
 
@@ -105,7 +185,7 @@ int main(int argc, char** argv) {
 		atlas, 
 		_binary_museo_ttf_start, 
 		font_data_size, 
-		18.0f, 
+		24.0f, 
 		NULL, 
 		ranges
 	);
@@ -117,8 +197,14 @@ int main(int argc, char** argv) {
     cImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     ImVec4 clear_color = { 0.45f, 0.55f, 0.60f, 1.00f };
+
 	
-    bool done = false;
+	chat* chat_schas = malloc(sizeof(chat));
+	user* usrs;
+	chat* chats;
+	uint16_t g_cid;
+	
+	bool done = false;
     while (!done)
     {
         if (IsIconic(hwnd)) {
@@ -145,11 +231,11 @@ int main(int argc, char** argv) {
         cImGui_ImplDX11_NewFrame();
         cImGui_ImplWin32_NewFrame();
         igNewFrame();
-		short x, y;
+		float x, y;
 		x=io->DisplaySize.x;
 		y=io->DisplaySize.y;
 
-		zc_chat(x, y);
+		zc_chat(x, y, chat_schas);
 		zc_voice(x, y);
 		zc_sw(x, y);
 		
@@ -167,7 +253,12 @@ int main(int argc, char** argv) {
         //     Sleep(100); 
         // }
     }
+	// free svoe
+	
+	free(chat_schas);
 
+
+	
     cImGui_ImplDX11_Shutdown();
     cImGui_ImplWin32_Shutdown();
     igDestroyContext(NULL);
