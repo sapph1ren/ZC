@@ -27,26 +27,26 @@ extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wPara
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
 
-// структуы
+// -------- структуы --------
 
 typedef struct {
-	uint32_t mid; // айди сообщения
-	uint16_t cid; // айди чата
-	uint16_t uid; // айди юзера
-	bool dost;    // доставлено ли сообщение
-	char time[16];// время с датой
-	union{ // тут может быть только одна из трех строк, шоб меньше памяти жрало
-		char text[4096];     // текст до 4кб 
-		ITID* img_ptr;       // указатель на фото
-		char* path;          // путь до документа на отправку/просмотр
+	uint32_t mid;        // айди сообщения
+	uint16_t cid;        // айди чата
+	uint16_t uid;        // айди юзера
+	bool dost;           // доставлено ли сообщение
+	char time[16];       // время с датой
+	union{               // тут может быть только одна из трех строк, шоб меньше памяти жрало
+		char text[4096]; // текст до 4кб 
+		ITID* img_ptr;   // указатель на фото
+		char* path;      // путь до документа на отправку/просмотр
 	} ctnt;
-	uint8_t type; // тип сообщения, чтобы правильно и быстро извлекать содержимое 
+	uint8_t type;        // тип сообщения, чтобы правильно и быстро извлекать содержимое 
 } msg;
 
 typedef struct {
 	uint16_t cid;        // айди чата
 	char name[32];       // название чата
-	ITID* ava_prt;       // указатель на аватарку чата
+	ITID* ava_ptr;       // указатель на аватарку чата
 	uint32_t ns;         // кол-во непрочитанных
 	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
 	uint32_t lmid;	     // айди последнего сообщения
@@ -60,12 +60,12 @@ typedef struct {
 } user; 
 
 typedef struct {
-	char name[32]; // имя
-	uint16_t uid;  // айди юзера
-	uint64_t* hash;// хэш пароля
-	ITID* ava_ptr; // указатель на аватарку
-	bool ver;      // важный бумажный
-	char obn[16];  // дата и время синхронизации с сервером
+	char name[32];       // имя
+	uint16_t uid;        // айди юзера
+	uint64_t* hash;      // хэш пароля
+	ITID* ava_ptr;       // указатель на аватарку
+	bool ver;            // важный бумажный
+	char obn[16];        // дата и время синхронизации с сервером
 	/*
 надо:
 	сокеты
