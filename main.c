@@ -1,21 +1,65 @@
-#include <windows.h>
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <process.h>
+
+#define WOLFSSL_NO_DEF_TM_RESIST
+#define WOLFSSL_MINGW
+#define WOLFSSL_ANY_RECENT_WINDOWS
+#define OPENSSL_EXTRA 
+#define WOLFSSL_STATIC_MEMORY
+#define WOLFSSL_KEY_GEN
+#define HAVE_AESGCM
+#define HAVE_HASHDRBG
+#define WOLFSSL_SHA512
+#define WOLFSSL_SHA384
+#define NO_PSK
+#include "wolfssl/options.h"
+#include "wolfssl/ssl.h"
+#include "wolfssl/wolfcrypt/ecc.h"
+#include "wolfssl/wolfcrypt/sha512.h"
+#include "wolfssl/wolfcrypt/asn.h"
+
+#include "zlib/zlib.h"
+#include "zlib/zconf.h"
+
+#include "opus/opus.h"
+#define MINIAUDIO_IMPLEMENTATION
+#include "other/miniaudio.h"
+
+#include "sqlite3.h"
+
 #include <d3d11.h>      
 #include <d3dcompiler.h>
-#include "dcimgui.h"
-#include "dcimgui_impl_win32.h"
-#include "dcimgui_impl_dx11.h"
+
+#include "dcimgui/dcimgui.h"
+#include "dcimgui/dcimgui_impl_win32.h"
+#include "dcimgui/dcimgui_impl_dx11.h"
+
 #include <stdio.h>
-#include <Windows.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <math.h>
 #include <tchar.h>
-#include <tchar.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+unsigned char* SERVER_IP;
+#define SERVER_PORT    "65000"
+#define SERVER_SNI     "ozon.ru"
+#define REG_PATH       "Software\\CoreMessenger"
+#define CHUNK_SIZE     16384         
+#define AUDIO_RB_SIZE  48000 * 4
+
+
 #define ITID ImTextureID
 // #define ImVec2_t(x, y) ((ImVec2_t){x, y})
 #define ImVec2(x, y) ((ImVec2){x, y})
-static ID3D11Device*            g_pd3dDevice = NULL;
-static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
-static IDXGISwapChain*          g_pSwapChain = NULL;
+
+static ID3D11Device*            g_pd3dDevice           = NULL;
+static ID3D11DeviceContext*     g_pd3dDeviceContext    = NULL;
+static IDXGISwapChain*          g_pSwapChain           = NULL;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = NULL;
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
@@ -28,6 +72,7 @@ extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
 
 // -------- структуы --------
+typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO } SocketType;
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -75,6 +120,28 @@ typedef struct {
 	*/
 	
 } me;
+
+typedef struct {
+    struct {
+        SOCKET fd;
+        WOLFSSL* ssl;
+        bool active;
+    } conn[SOCK_MAX];
+
+    WOLFSSL_CTX* ssl_ctx;
+    volatile bool running;
+    
+    ma_device audio_dev;
+    OpusEncoder* enc;
+    OpusDecoder* dec;
+    float* ring_buffer;
+    volatile int rb_write, rb_read;
+
+    FILE* incoming_file;
+    uint32_t file_bytes_left;
+} ZC_Context;
+
+static ZC_Context g_me = {0};
 
 void zc_chat(short x, short y, chat* c){
 	igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
@@ -156,6 +223,39 @@ void zc_sw(short x, short y){
 */
 
 
+
+// size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
+//     size_t total = size * nmemb;
+//     out->append(static_cast<char*>(contents), total);
+//     return total;
+// }
+
+// std::string Inet::fetch_server_address() {
+//     CURL* curl = curl_easy_init();
+//     if (!curl) return "";
+//     std::string response;
+//     curl_easy_setopt(curl, CURLOPT_URL, "https://api.jsonbin.io/v3/b/698b3111ae596e708f20064a");
+//     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+//     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+//     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+//     struct curl_slist* headers = nullptr;
+//     headers = curl_slist_append(headers, "x-access-key: $2a$10$h5aritiqbmvxqzitousr0e8t3zcpl.10zhkcarhjc26ju7xazkody");
+//     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+//     CURLcode res = curl_easy_perform(curl);
+//     curl_slist_free_all(headers);
+//     curl_easy_cleanup(curl);
+
+//     if (res != CURLE_OK) return "";
+//     try {
+//         json j = json::parse(response);
+//         return j["record"]["s"].get<std::string>();
+//     }
+//     catch (...) {
+//         return "";
+//     }
+// }
 
 
 int main(int argc, char** argv) {
