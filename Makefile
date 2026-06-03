@@ -1,20 +1,22 @@
 TARGET = Zipcord.exe
 CC = ccache gcc
 
-WOLFSSL_INC = -I. 
-WOLFSSL_LIB = libwolfssl.a
-DCIMGUI_LIB = libdcig.a
-GLFW_LIB = libglfw3.a
+A_INC = /a/ 
+WOLFSSL_LIB = wolfssl
+DCIMGUI_LIB = dcig
+ZLIB_LIB = z
+# -flto
+CFLAGS = -std=c17 -O3 -s -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DNDEBUG -I.
 
-CFLAGS = -std=c17 -O3 -s -flto -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DWOLFSSL_USER_SETTINGS $(WOLFSSL_INC)
-		
-SRC = main.c sqlite3.c SHA512.c
+SRC = main.c sqlite3.c
 OBJS = $(SRC:.c=.o) museo.o 5.obj 4.obj
 
-LIBS = $(DCIMGUI_LIB) $(WOLFSSL_LIB) -ld3d11 -ld3dcompiler -ldxgi -ldxguid -luser32 -lgdi32 -lshell32 -lws2_32 -lmsimg32 -lsetupapi -limm32 -lssp -lcrypt32 -ldwmapi -lstdc++
+LIBS = -L./a/ -ldcig -lwolfssl -lopus -lz -ld3d11 -ld3dcompiler -ldxgi -ldxguid \
+       -luser32 -lgdi32 -lshell32 -lws2_32 -lmsimg32 -lsetupapi -limm32 -lm -lssp \
+       -lcrypt32 -ldwmapi -lstdc++ -lwinmm -lole32
 
 
-LDFLAGS = -Wl,--gc-sections -Wl,--as-needed -static-libgcc -static-libstdc++ -mwindows -flto
+LDFLAGS = -Wl,--gc-sections -Wl,--as-needed -static-libgcc -static-libstdc++ -mwindows # -flto
 
 all: $(TARGET)
 
@@ -30,7 +32,7 @@ run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	@if exist $(TARGET) del /q $(TARGET)
-	@if exist *.o del /q *.o
+	del /q $(TARGET)
+	del /q *.o
 
 .PHONY: all run clean
