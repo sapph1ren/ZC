@@ -10,6 +10,8 @@ Zipcord is a lightweight and private messenger written in pure C using Dear ImGu
 * Language: C17 / C++ (for ImGui bindings)
 * GUI: Dear ImGui (DirectX 11 backend)
 * Cryptography: wolfSSL & SHA-512 
+* TLS&DTS: wolfSSL
+* Sockets: Winsock2.h
 * Database: SQLite3 
 * Utilities: STB (image, resize, write) for working with images.
 * Audio: miniaudio
