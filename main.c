@@ -54,6 +54,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <tchar.h>
+#include <string.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -78,6 +79,10 @@ extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wPara
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
 
+extern char* _sas(char from[], unsigned short s);
+extern char* _sis(char from[], unsigned short s);
+
+
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -92,6 +97,7 @@ typedef struct {
 	} ctnt;
 	uint8_t type;        // тип сообщения, чтобы правильно и быстро извлекать содержимое 
 } msg;
+
 
 typedef struct {
 	uint16_t cid;        // айди чата
@@ -126,22 +132,20 @@ typedef struct {
 	
 } me;
 
-static const char* SERVER_IP_POOL[] = {
+static const char* SERVER_IP[] = {
     "95.163.249.123", 
     "185.215.4.56",    
     "45.138.201.12"    
 };
 #define IP_POOL_SIZE    3
 #define SERVER_PORT     "443"
+#define SERVER_IP       "1.1.1.1"
 #define SERVER_SNI      "ozon.ru"
 #define CHUNK_SIZE      16384
 #define AUDIO_RATE_HQ   48000
 #define AUDIO_RATE_LQ   16000
 #define POOL_RESERVE    256
-#define MAX_POOL_SIZE   65536 
-#define DISK_QUEUE_MAX  128
-#define POOL_RESERVE    256
-#define MAX_POOL_SIZE   65536 
+#define MAX_POOL_SIZE   16384 
 #define DISK_QUEUE_MAX  128
 #define MAX_AUDIO_PKTS  128
 
@@ -206,15 +210,9 @@ typedef struct {
     uint32_t audio_rb_size;
 
     HANDLE worker_thread;
-    HANDLE disk_thread;
 
     zc_packet_t pkt_pool[POOL_RESERVE];
     CRITICAL_SECTION pool_lock;
-
-    zc_disk_task_t disk_queue[DISK_QUEUE_MAX];
-    volatile LONG disk_q_write;
-    volatile LONG disk_q_read;
-    HANDLE disk_semaphore;
 
     ma_device audio_dev;
     bool audio_dev_init;
@@ -228,21 +226,76 @@ typedef struct {
     zc_audio_tx_pkt_t audio_tx_queue[MAX_AUDIO_PKTS];
     volatile LONG audio_tx_write;
     volatile LONG audio_tx_read;
-    
-    volatile LONG64 file_counter; 
+
     uint64_t last_app_ping_time;
 
-	    // Callback для доставки полученных сообщений (вызывается из сетевого потока)
     void (*on_message)(SocketType channel, uint8_t* data, uint32_t len, uint32_t orig_len);
 } zc_engine_t;
 
-static void ZC_ForceDisconnect(zc_engine_t* eng, SocketType t);
+#include <stdbool.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <string.h>
 
-// ==============================================================================
-// 1. СТАТИЧЕСКИЙ ПУЛ ПАКЕТОВ
-// ==============================================================================
 
-static int ZC_Pool_Acquire(zc_engine_t* eng) {
+bool S_bdu(const unsigned char* hash_data, size_t hash_len) {
+    if (!hash_data || hash_len == 0) return false;
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        return false;
+    }
+
+    DWORD timeout_ms = 1000; 
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_ms, sizeof(timeout_ms));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout_ms, sizeof(timeout_ms));
+
+    struct addrinfo hints, *res = NULL;
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(SERVER_IP, "448", &hints, &res) != 0 || res == NULL) {
+        closesocket(sock);
+        return false;
+    }
+
+    if (connect(sock, res->ai_addr, (int)res->ai_addrlen) == SOCKET_ERROR) {
+        freeaddrinfo(res);
+        closesocket(sock);
+        return false;
+    }
+    freeaddrinfo(res);
+
+    int bytes_sent = send(sock, (const char*)hash_data, (int)hash_len, 0);
+    if (bytes_sent == SOCKET_ERROR || (size_t)bytes_sent != hash_len) {
+        closesocket(sock);
+        return false;
+    }
+
+
+    char recv_buf[64];
+    ZeroMemory(recv_buf, sizeof(recv_buf));
+
+    int bytes_received = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
+    
+    closesocket(sock);
+
+    if (bytes_received <= 0) {
+        return false;
+    }
+
+    recv_buf[bytes_received] = '\0';
+
+    if (strcmp(recv_buf, "все ок") == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+static void S_d(zc_engine_t* eng, SocketType t);
+
+static int S_spisok(zc_engine_t* eng) {
     EnterCriticalSection(&eng->pool_lock);
     for (int i = 0; i < POOL_RESERVE; i++) {
         if (InterlockedCompareExchange(&eng->pkt_pool[i].in_use, 1, 0) == 0) {
@@ -256,19 +309,15 @@ static int ZC_Pool_Acquire(zc_engine_t* eng) {
     return -1; 
 }
 
-static void ZC_Pool_Release(zc_engine_t* eng, int idx) {
+static void S_spisok_off(zc_engine_t* eng, int idx) {
     if (idx < 0 || idx >= POOL_RESERVE) return;
     InterlockedExchange(&eng->pkt_pool[idx].in_use, 0);
 }
 
-// ==============================================================================
-// 2. I/O КОЛБЭКИ С ФРАГМЕНТАЦИЕЙ (ИСПРАВЛЕННЫЕ КОНСТАНТЫ)
-// ==============================================================================
-
-static int MyIOSend(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
+static int IO_Send(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     if (!ctx) return WOLFSSL_CBIO_ERR_GENERAL;
     SOCKET s = *(SOCKET*)ctx;
-    if (s == INVALID_SOCKET) return WOLFSSL_CBIO_ERR_CONN_RST;  // было CONN_RESET
+    if (s == INVALID_SOCKET) return WOLFSSL_CBIO_ERR_CONN_RST; 
     
     if (sz > 5 && (uint8_t)buf[0] == 0x16 && (uint8_t)buf[1] == 0x03 && (uint8_t)buf[5] == 0x01) {
         int chunk1 = 5 + (rand() % 11); 
@@ -335,7 +384,7 @@ static int MyIOSend(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     return r;
 }
 
-static int MyIORecv(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
+static int IO_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     if (!ctx) return WOLFSSL_CBIO_ERR_GENERAL;
     SOCKET s = *(SOCKET*)ctx;
     if (s == INVALID_SOCKET) return WOLFSSL_CBIO_ERR_CONN_RST;
@@ -350,149 +399,67 @@ static int MyIORecv(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
     return r;
 }
 
-// ==============================================================================
-// 3. АСИНХРОННЫЙ ДИСКОВЫЙ ПОТОК (без изменений)
-// ==============================================================================
-
-static void ZC_PushDiskTask(zc_engine_t* eng, const char* path, bool is_write, int pool_idx, bool is_eof) {
-    LONG w = InterlockedAdd(&eng->disk_q_write, 0);
-    LONG r = InterlockedAdd(&eng->disk_q_read, 0);
-    LONG next_w = (w + 1) % DISK_QUEUE_MAX;
-
-    if (next_w != r) {
-        if (path) strcpy_s(eng->disk_queue[w].file_path, MAX_PATH, path);
-        else eng->disk_queue[w].file_path[0] = '\0';
-        eng->disk_queue[w].is_write = is_write;
-        eng->disk_queue[w].pool_idx = pool_idx;
-        eng->disk_queue[w].is_eof = is_eof;
-        MemoryBarrier();
-        InterlockedExchange(&eng->disk_q_write, next_w);
-        ReleaseSemaphore(eng->disk_semaphore, 1, NULL);
-    } else {
-        if (pool_idx != -1) ZC_Pool_Release(eng, pool_idx);
-    }
-}
-
-DWORD WINAPI ZC_DiskWorker(LPVOID p) {
-    zc_engine_t* eng = (zc_engine_t*)p;
-    z_stream inflate_strm = {0};
-    z_stream deflate_strm = {0};
-    FILE* current_rx_file = NULL;
-    FILE* current_tx_file = NULL;
-    bool inf_init = false, def_init = false;
-
-    while (eng->running) {
-        WaitForSingleObject(eng->disk_semaphore, 100);
-        if (!eng->running) break;
-
-        LONG r = InterlockedAdd(&eng->disk_q_read, 0);
-        LONG w = InterlockedAdd(&eng->disk_q_write, 0);
-
-        while (r != w) {
-            zc_disk_task_t task = eng->disk_queue[r];
-            
-            if (task.is_write) { 
-                if (!current_rx_file && task.file_path[0] != '\0') {
-                    current_rx_file = fopen(task.file_path, "wb");
-                    if (current_rx_file) inf_init = (inflateInit(&inflate_strm) == Z_OK);
-                }
-                if (current_rx_file && inf_init && task.pool_idx != -1) {
-                    zc_packet_t* pkt = &eng->pkt_pool[task.pool_idx];
-                    inflate_strm.avail_in = pkt->len;
-                    inflate_strm.next_in = pkt->data;
-                    uint8_t out_buf[CHUNK_SIZE];
-                    do {
-                        inflate_strm.avail_out = CHUNK_SIZE;
-                        inflate_strm.next_out = out_buf;
-                        if (inflate(&inflate_strm, Z_NO_FLUSH) < 0) break;
-                        fwrite(out_buf, 1, CHUNK_SIZE - inflate_strm.avail_out, current_rx_file);
-                    } while (inflate_strm.avail_out == 0);
-                }
-                if (task.is_eof && current_rx_file) {
-                    if (inf_init) inflateEnd(&inflate_strm);
-                    fclose(current_rx_file); current_rx_file = NULL; inf_init = false;
-                }
-                if (task.pool_idx != -1) ZC_Pool_Release(eng, task.pool_idx);
-            } 
-            else { 
-                if (!current_tx_file && task.file_path[0] != '\0') {
-                    current_tx_file = fopen(task.file_path, "rb");
-                    if (current_tx_file) def_init = (deflateInit(&deflate_strm, Z_BEST_SPEED) == Z_OK);
-                }
-                if (current_tx_file && def_init) {
-                    uint8_t in_buf[CHUNK_SIZE];
-                    uint8_t out_buf[CHUNK_SIZE + 4];
-                    while (!feof(current_tx_file) && eng->running) {
-                        if (InterlockedAdd(&eng->audio_tx_write, 0) != InterlockedAdd(&eng->audio_tx_read, 0)) {
-                            SwitchToThread(); continue;
-                        }
-                        
-                        size_t read_bytes = fread(in_buf, 1, CHUNK_SIZE, current_tx_file);
-                        deflate_strm.avail_in = (uInt)read_bytes;
-                        deflate_strm.next_in = in_buf;
-                        deflate_strm.avail_out = CHUNK_SIZE;
-                        deflate_strm.next_out = out_buf + 4;
-                        
-                        deflate(&deflate_strm, feof(current_tx_file) ? Z_FINISH : Z_NO_FLUSH);
-                        uint32_t compressed = CHUNK_SIZE - deflate_strm.avail_out;
-                        if (compressed > 0) {
-                            *(uint32_t*)out_buf = htonl(compressed);
-                            
-                            EnterCriticalSection(&eng->conns[SOCK_MEDIA].tx_lock);
-                            uint32_t next = (eng->conns[SOCK_MEDIA].tx_head + 1) % 64;
-                            if (next != eng->conns[SOCK_MEDIA].tx_tail) {
-                                int p_idx = ZC_Pool_Acquire(eng);
-                                if (p_idx != -1) {
-                                    memcpy(eng->pkt_pool[p_idx].data, out_buf, compressed + 4);
-                                    eng->pkt_pool[p_idx].len = compressed + 4;
-                                    eng->conns[SOCK_MEDIA].tx_pool_indexes[eng->conns[SOCK_MEDIA].tx_head] = p_idx;
-                                    eng->conns[SOCK_MEDIA].tx_head = next;
-                                }
-                            }
-                            LeaveCriticalSection(&eng->conns[SOCK_MEDIA].tx_lock);
-                        }
-                    }
-                    deflateEnd(&deflate_strm); fclose(current_tx_file); current_tx_file = NULL; def_init = false;
-                    
-                    uint32_t eof_m = 0;
-                    EnterCriticalSection(&eng->conns[SOCK_MEDIA].tx_lock);
-                    uint32_t next = (eng->conns[SOCK_MEDIA].tx_head + 1) % 64;
-                    if (next != eng->conns[SOCK_MEDIA].tx_tail) {
-                        int p_idx = ZC_Pool_Acquire(eng);
-                        if (p_idx != -1) {
-                            memcpy(eng->pkt_pool[p_idx].data, &eof_m, 4);
-                            eng->pkt_pool[p_idx].len = 4;
-                            eng->conns[SOCK_MEDIA].tx_pool_indexes[eng->conns[SOCK_MEDIA].tx_head] = p_idx;
-                            eng->conns[SOCK_MEDIA].tx_head = next;
-                        }
-                    }
-                    LeaveCriticalSection(&eng->conns[SOCK_MEDIA].tx_lock);
-                }
-            }
-
-            r = (r + 1) % DISK_QUEUE_MAX;
-            InterlockedExchange(&eng->disk_q_read, r);
-        }
-    }
-    if (current_rx_file) { if (inf_init) inflateEnd(&inflate_strm); fclose(current_rx_file); }
-    if (current_tx_file) { if (def_init) deflateEnd(&deflate_strm); fclose(current_tx_file); }
-    return 0;
-}
-
-// ==============================================================================
-// 4. СЕТЕВОЙ МУЛЬТИПЛЕКСОР (ИСПРАВЛЕННЫЕ ВЫЗОВЫ WOLFSSL)
-// ==============================================================================
 
 void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
     zc_connection_t* c = &eng->conns[t];
     if (t == SOCK_MEDIA) {
-        ZC_PushDiskTask(eng, (const char*)data, false, -1, false);
-    } 
+        // data – путь к файлу (строка)
+        const char* filepath = (const char*)data;
+        FILE* f = fopen(filepath, "rb");
+        if (!f) return;
+
+        uint8_t in_buf[CHUNK_SIZE];
+        uint8_t out_buf[CHUNK_SIZE + 8]; // +8 для заголовков (сжатая длина, исходная длина)
+        size_t bytes_read;
+
+        while ((bytes_read = fread(in_buf, 1, CHUNK_SIZE, f)) > 0) {
+            uLongf compressed_len = compressBound((uLong)bytes_read);
+            if (compressed_len > CHUNK_SIZE) {
+                // сжатый блок не влезает в буфер – отправить несжатым
+                ((uint32_t*)out_buf)[0] = htonl((uint32_t)bytes_read);
+                ((uint32_t*)out_buf)[1] = htonl(0xFFFFFFFF); // флаг "несжато"
+                memcpy(out_buf + 8, in_buf, bytes_read);
+                compressed_len = (uLong)bytes_read;
+            } else {
+                if (compress(out_buf + 8, &compressed_len, in_buf, (uLong)bytes_read) != Z_OK) {
+                    // ошибка сжатия – отправить как есть
+                    ((uint32_t*)out_buf)[0] = htonl((uint32_t)bytes_read);
+                    ((uint32_t*)out_buf)[1] = htonl(0xFFFFFFFF);
+                    memcpy(out_buf + 8, in_buf, bytes_read);
+                    compressed_len = (uLong)bytes_read;
+                } else {
+                    ((uint32_t*)out_buf)[0] = htonl((uint32_t)compressed_len);
+                    ((uint32_t*)out_buf)[1] = htonl((uint32_t)bytes_read);
+                }
+            }
+
+            // Поместить пакет в очередь отправки
+            int p_idx = S_spisok(eng);
+            if (p_idx != -1) {
+                uint32_t total_len = (uint32_t)compressed_len + 8;
+                memcpy(eng->pkt_pool[p_idx].data, out_buf, total_len);
+                eng->pkt_pool[p_idx].len = total_len;
+
+                EnterCriticalSection(&c->tx_lock);
+                uint32_t next = (c->tx_head + 1) % 64;
+                if (next != c->tx_tail) {
+                    c->tx_pool_indexes[c->tx_head] = p_idx;
+                    c->tx_head = next;
+                } else {
+                    S_spisok_off(eng, p_idx);
+                }
+                LeaveCriticalSection(&c->tx_lock);
+            }
+        }
+
+        fclose(f);
+        return;
+    }
     else if (t == SOCK_AUDIO) {
         EnterCriticalSection(&c->tx_lock);
         uint32_t next = (c->tx_head + 1) % 64;
         if (next != c->tx_tail) {
-            int p_idx = ZC_Pool_Acquire(eng);
+            int p_idx = S_spisok(eng);
             if (p_idx != -1) {
                 *(uint32_t*)eng->pkt_pool[p_idx].data = htonl(len);
                 memcpy(eng->pkt_pool[p_idx].data + 4, data, len);
@@ -504,7 +471,7 @@ void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
         LeaveCriticalSection(&c->tx_lock);
     } 
     else {
-        int p_idx = ZC_Pool_Acquire(eng);
+        int p_idx = S_spisok(eng);
         if (p_idx == -1) return;
 
         if (eng->is_legacy_cpu) {
@@ -520,7 +487,7 @@ void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
                 ((uint32_t*)eng->pkt_pool[p_idx].data)[1] = htonl(len);
                 eng->pkt_pool[p_idx].len = (uint32_t)dest_len + 8;
             } else {
-                ZC_Pool_Release(eng, p_idx);
+                S_spisok_off(eng, p_idx);
                 return;
             }
         }
@@ -530,7 +497,7 @@ void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
         if (next != c->tx_tail) {
             c->tx_pool_indexes[c->tx_head] = p_idx;
             c->tx_head = next;
-        } else ZC_Pool_Release(eng, p_idx);
+        } else S_spisok_off(eng, p_idx);
         LeaveCriticalSection(&c->tx_lock);
     }
 }
@@ -548,25 +515,36 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                     c->text_orig_len = (c->expected_header_len == 8) ? ntohl(((uint32_t*)c->header_buf)[1]) : 0;
                     c->header_bytes_read = 0;
 
+                    // PONG-пакет (4 байта + флаг 0xFFFFFFFF)
                     if (c->target_payload_len == 4 && c->text_orig_len == 0xFFFFFFFF) {
                         uint32_t pong_val = 0;
                         wolfSSL_read(c->ssl, &pong_val, 4);
                         continue;
                     }
 
+                    // Пустой payload (только заголовок) – для SOCK_MEDIA больше не используется
                     if (c->target_payload_len == 0) {
-                        if (t == SOCK_MEDIA) ZC_PushDiskTask(eng, NULL, true, -1, true);
                         continue;
                     }
-                    if (c->target_payload_len > MAX_POOL_SIZE) { ZC_ForceDisconnect(eng, t); return; }
 
-                    c->rx_pool_idx = ZC_Pool_Acquire(eng);
-                    if (c->rx_pool_idx == -1) { ZC_ForceDisconnect(eng, t); return; } 
-                    c->payload_bytes_read = 0; c->reading_payload = true;
+                    if (c->target_payload_len > MAX_POOL_SIZE) {
+                        S_d(eng, t);   // дисконнект
+                        return;
+                    }
+
+                    c->rx_pool_idx = S_spisok(eng);
+                    if (c->rx_pool_idx == -1) {
+                        S_d(eng, t);
+                        return;
+                    }
+                    c->payload_bytes_read = 0;
+                    c->reading_payload = true;
                 }
             } else {
-                if (wolfSSL_get_error(c->ssl, n) == WOLFSSL_ERROR_WANT_READ) return;
-                ZC_ForceDisconnect(eng, t); return;
+                if (wolfSSL_get_error(c->ssl, n) == WOLFSSL_ERROR_WANT_READ)
+                    return;
+                S_d(eng, t);
+                return;
             }
         }
 
@@ -578,14 +556,9 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                 c->payload_bytes_read += n;
                 if (c->payload_bytes_read == c->target_payload_len) {
                     pkt->len = c->target_payload_len;
-                    
-                    if (t == SOCK_MEDIA) {
-                        char r_path[MAX_PATH]; 
-                        int64_t file_id = InterlockedIncrement64(&eng->file_counter);
-                        sprintf_s(r_path, MAX_PATH, "downloads/file_%llu_%lld.dat", GetTickCount64(), file_id);
-                        ZC_PushDiskTask(eng, r_path, true, c->rx_pool_idx, false);
-                    } 
-                    else if (t == SOCK_AUDIO) {
+
+                    // Аудио обрабатываем отдельно (Opus, кольцевой буфер)
+                    if (t == SOCK_AUDIO) {
                         opus_int16 pcm[960];
                         int frame_samples = eng->is_legacy_cpu ? 320 : 960;
                         int s = opus_decode(eng->dec, pkt->data, (int)pkt->len, pcm, frame_samples, 0);
@@ -595,20 +568,20 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                                 LONG next_w = (w + 1) % eng->audio_rb_size;
                                 if (next_w != InterlockedAdd(&eng->rb_read, 0)) {
                                     eng->audio_rb[w] = pcm[i] / 32768.0f;
-                                    MemoryBarrier(); InterlockedExchange(&eng->rb_write, next_w);
+                                    MemoryBarrier();
+                                    InterlockedExchange(&eng->rb_write, next_w);
                                 }
                             }
                         }
-                        ZC_Pool_Release(eng, c->rx_pool_idx);
-                    } 
+                        S_spisok_off(eng, c->rx_pool_idx);
+                    }
                     else {
-                        // Обработка текстовых/системных каналов с callback
+                        // Для всех остальных каналов (TEXT, SYSTEM, MEDIA) – распаковка и вызов коллбэка
                         if (eng->on_message) {
                             if (c->text_orig_len == 0xFFFFFFFF) {
-                                // RAW режим (без сжатия)
+                                // Несжатые данные
                                 eng->on_message(t, pkt->data, pkt->len, c->text_orig_len);
                             } else {
-                                // Распаковываем zlib
                                 uint8_t* o_buf = (uint8_t*)malloc(c->text_orig_len + 1);
                                 if (o_buf) {
                                     uLongf u_len = c->text_orig_len;
@@ -616,39 +589,19 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                                         eng->on_message(t, o_buf, (uint32_t)u_len, c->text_orig_len);
                                     }
                                     free(o_buf);
-                                } else {
-                                    // Если память не выделилась – просто освобождаем пакет
-                                }
-                            }
-                        } else {
-                            // Fallback: старый printf
-                            if (c->text_orig_len == 0xFFFFFFFF) {
-                                uint8_t* raw_buf = (uint8_t*)malloc(pkt->len + 1);
-                                if (raw_buf) {
-                                    memcpy(raw_buf, pkt->data, pkt->len);
-                                    raw_buf[pkt->len] = '\0';
-                                    printf("[Engine v5 RAW] Channel %d: %s\n", t, (char*)raw_buf);
-                                    free(raw_buf);
-                                }
-                            } else {
-                                uint8_t* o_buf = (uint8_t*)malloc(c->text_orig_len + 1);
-                                if (o_buf) {
-                                    uLongf u_len = c->text_orig_len;
-                                    if (uncompress(o_buf, &u_len, pkt->data, pkt->len) == Z_OK) {
-                                        o_buf[u_len] = '\0';
-                                        printf("[Engine v5 ZLIB] Channel %d: %s\n", t, (char*)o_buf);
-                                    }
-                                    free(o_buf);
                                 }
                             }
                         }
-                        ZC_Pool_Release(eng, c->rx_pool_idx);
+                        S_spisok_off(eng, c->rx_pool_idx);
                     }
                     c->reading_payload = false;
                 }
             } else {
-                if (wolfSSL_get_error(c->ssl, n) == WOLFSSL_ERROR_WANT_READ) return;
-                ZC_Pool_Release(eng, c->rx_pool_idx); ZC_ForceDisconnect(eng, t); return;
+                if (wolfSSL_get_error(c->ssl, n) == WOLFSSL_ERROR_WANT_READ)
+                    return;
+                S_spisok_off(eng, c->rx_pool_idx);
+                S_d(eng, t);
+                return;
             }
         }
     }
@@ -667,14 +620,14 @@ static void ZC_ProcessWrite(zc_engine_t* eng, SocketType t) {
         if (n > 0) {
             pkt->sent += n;
             if (pkt->sent == pkt->len) {
-                ZC_Pool_Release(eng, p_idx);
+                S_spisok_off(eng, p_idx);
                 EnterCriticalSection(&c->tx_lock);
                 c->tx_tail = (c->tx_tail + 1) % 64;
                 LeaveCriticalSection(&c->tx_lock);
             }
         } else {
             if (wolfSSL_get_error(c->ssl, n) == WOLFSSL_ERROR_WANT_WRITE) return;
-            ZC_ForceDisconnect(eng, t); return;
+            S_d(eng, t); return;
         }
     }
 }
@@ -683,6 +636,7 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
     zc_engine_t* eng = (zc_engine_t*)p;
 
     while (eng->running) {
+        // 1. Дренаж аудио-очереди из подсистемы записи звука
         LONG ar = InterlockedAdd(&eng->audio_tx_read, 0);
         LONG aw = InterlockedAdd(&eng->audio_tx_write, 0);
         while (ar != aw) {
@@ -691,13 +645,14 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             InterlockedExchange(&eng->audio_tx_read, ar);
         }
 
+        // 2. Логика автоматических пингов (раз в 30 секунд)
         uint64_t now = GetTickCount64();
         if (now - eng->last_app_ping_time > 30000) {
             for (int i = 0; i < SOCK_MAX; i++) {
                 if (eng->conns[i].state == CONN_STATE_CONNECTED) {
                     uint32_t ping_hdr[2] = { htonl(4), htonl(0xFFFFFFFF) };
                     uint32_t ping_body = 0xDEADC0DE;
-                    int p_idx = ZC_Pool_Acquire(eng);
+                    int p_idx = S_spisok(eng);
                     if (p_idx != -1) {
                         memcpy(eng->pkt_pool[p_idx].data, ping_hdr, 8);
                         memcpy(eng->pkt_pool[p_idx].data + 8, &ping_body, 4);
@@ -707,7 +662,7 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
                         if (next != eng->conns[i].tx_tail) {
                             eng->conns[i].tx_pool_indexes[eng->conns[i].tx_head] = p_idx;
                             eng->conns[i].tx_head = next;
-                        } else ZC_Pool_Release(eng, p_idx);
+                        } else S_spisok_off(eng, p_idx);
                         LeaveCriticalSection(&eng->conns[i].tx_lock);
                     }
                 }
@@ -715,19 +670,14 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             eng->last_app_ping_time = now;
         }
 
+        // 3. Подготовка масок для select()
         fd_set read_fds, write_fds;
         FD_ZERO(&read_fds); FD_ZERO(&write_fds);
         SOCKET max_s = 0; 
 
-        bool audio_pending = false;
-        EnterCriticalSection(&eng->conns[SOCK_AUDIO].tx_lock);
-        if (eng->conns[SOCK_AUDIO].tx_head != eng->conns[SOCK_AUDIO].tx_tail) audio_pending = true;
-        LeaveCriticalSection(&eng->conns[SOCK_AUDIO].tx_lock);
-
-        LONG dq_w = InterlockedAdd(&eng->disk_q_write, 0);
-        LONG dq_r = InterlockedAdd(&eng->disk_q_read, 0);
-        LONG current_disk_depth = (dq_w - dq_r + DISK_QUEUE_MAX) % DISK_QUEUE_MAX;
-        bool disk_overloaded = (current_disk_depth > (DISK_QUEUE_MAX - 16));
+        // Дисковая подсистема удалена
+		LONG current_disk_depth = 0;
+		bool disk_overloaded = false;
 
         bool global_disconnected = true;
 
@@ -735,14 +685,14 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             zc_connection_t* c = &eng->conns[i];
             if (c->state != CONN_STATE_DISCONNECTED) global_disconnected = false;
 
+            // Авто-подключение дескрипторов
             if (c->state == CONN_STATE_DISCONNECTED && now >= c->next_retry_time) {
                 struct addrinfo *res = NULL;
-                const char* target_ip = SERVER_IP_POOL[c->current_ip_idx];
-                if (getaddrinfo(target_ip, SERVER_PORT, NULL, &res) == 0 && res != NULL) {
+                if (getaddrinfo(SERVER_IP, SERVER_PORT, NULL, &res) == 0 && res != NULL) {
                     c->fd = socket(AF_INET, SOCK_STREAM, 0);
                     if (c->fd != INVALID_SOCKET) {
                         u_long m = 1; ioctlsocket(c->fd, FIONBIO, &m);
-                        int keepalive = 1, keepcnt = 3, keepidle = 10, keepintvl = 2;
+                        int keepalive = 1;
                         setsockopt(c->fd, SOL_SOCKET, SO_KEEPALIVE, (char*)&keepalive, sizeof(keepalive));
                         connect(c->fd, res->ai_addr, (int)res->ai_addrlen);
                         c->state = CONN_STATE_CONNECTING_NET;
@@ -757,29 +707,43 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             if (c->fd == INVALID_SOCKET) continue;
             if (c->fd > max_s) max_s = c->fd;
 
-            if (c->state == CONN_STATE_CONNECTING_NET) FD_SET(c->fd, &write_fds);
-            else if (c->state == CONN_STATE_TLS_HANDSHAKE) { FD_SET(c->fd, &read_fds); FD_SET(c->fd, &write_fds); }
+            if (c->state == CONN_STATE_CONNECTING_NET) {
+                FD_SET(c->fd, &write_fds);
+            }
+            else if (c->state == CONN_STATE_TLS_HANDSHAKE) { 
+                FD_SET(c->fd, &read_fds); 
+                FD_SET(c->fd, &write_fds); 
+            }
             else if (c->state == CONN_STATE_CONNECTED) {
-                if (!(i == SOCK_MEDIA && disk_overloaded)) FD_SET(c->fd, &read_fds);
+                // Контроль перегрузки диска оставляем (чтобы не забить ОЗУ), но от аудио больше не зависим
+                if (!(i == SOCK_MEDIA && disk_overloaded)) {
+                    FD_SET(c->fd, &read_fds);
+                }
                 
                 bool has_tx = false;
                 EnterCriticalSection(&c->tx_lock);
                 if (c->tx_head != c->tx_tail) has_tx = true;
                 LeaveCriticalSection(&c->tx_lock);
 
-                if (has_tx && !(i == SOCK_MEDIA && audio_pending)) FD_SET(c->fd, &write_fds);
+                // ИЗМЕНЕНО: Убрано условие && !(i == SOCK_MEDIA && audio_pending).
+                // Теперь медиа-канал отправляет данные ВСЕГДА, когда есть что отправлять.
+                if (has_tx) {
+                    FD_SET(c->fd, &write_fds);
+                }
             }
         }
 
+        // Выбор адаптивного таймаута сна
         struct timeval tv;
         if (global_disconnected) {
             tv.tv_sec = 0; tv.tv_usec = 250000;
         } else if (eng->conns[SOCK_AUDIO].state == CONN_STATE_CONNECTED || current_disk_depth > 0) {
-            tv.tv_sec = 0; tv.tv_usec = 10000;
+            tv.tv_sec = 0; tv.tv_usec = 10000; // Минимальный таймаут при активном звонке или дисковых операциях
         } else {
             tv.tv_sec = 0; tv.tv_usec = 50000;
         }
 
+        // Мультиплексирование
         if (select((int)max_s + 1, &read_fds, &write_fds, NULL, &tv) > 0 && eng->running) {
             for (int i = 0; i < SOCK_MAX; i++) {
                 zc_connection_t* c = &eng->conns[i];
@@ -789,22 +753,18 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
                     int err = 0; int len = sizeof(err); getsockopt(c->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
                     if (err == 0) {
                         c->ssl = wolfSSL_new(eng->ctx_tls);
-                        // Используем стандартный wolfSSL_set_fd вместо wolfSSL_set_IO_ctx
                         wolfSSL_set_fd(c->ssl, (int)c->fd);
-                        
-                        // SNI через CTX или SSL (если доступно, иначе игнорируем)
-                        #ifdef WOLFSSL_SNI
-                        wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME, SERVER_SNI, (unsigned short)strlen(SERVER_SNI));
-                        #endif
-                        
                         c->state = CONN_STATE_TLS_HANDSHAKE;
-                    } else ZC_ForceDisconnect(eng, (SocketType)i);
+                    } else S_d(eng, (SocketType)i);
                 }
                 else if (c->state == CONN_STATE_TLS_HANDSHAKE && (FD_ISSET(c->fd, &read_fds) || FD_ISSET(c->fd, &write_fds))) {
                     int ret = wolfSSL_connect(c->ssl);
-                    if (ret == WOLFSSL_SUCCESS) { c->state = CONN_STATE_CONNECTED; c->backoff_ms = 1000; }
+                    if (ret == WOLFSSL_SUCCESS) { 
+                        c->state = CONN_STATE_CONNECTED; 
+                        c->backoff_ms = 1000; 
+                    }
                     else if (wolfSSL_get_error(c->ssl, ret) != WOLFSSL_ERROR_WANT_READ && wolfSSL_get_error(c->ssl, ret) != WOLFSSL_ERROR_WANT_WRITE) {
-                        ZC_ForceDisconnect(eng, (SocketType)i);
+                        S_d(eng, (SocketType)i);
                     }
                 }
                 else if (c->state == CONN_STATE_CONNECTED) {
@@ -817,21 +777,32 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
     return 0;
 }
 
-void ZC_Handler(SocketType channel, uint8_t* data, uint32_t len, uint32_t orig_len){
+void ZC_Handler(SocketType k, uint8_t* d, uint32_t l, uint32_t ol){
+
+	if(k == SOCK_TEXT){
+		
+	}
+	
+	else if(k == SOCK_SYSTEM){
+		
+	}
+	else if(k==SOCK_MEDIA){
+		
+	}
 	
 }
 
-static void ZC_ForceDisconnect(zc_engine_t* eng, SocketType t) {
+void S_d(zc_engine_t* eng, SocketType t) {
     zc_connection_t* c = &eng->conns[t];
     c->state = CONN_STATE_DISCONNECTED;
     if (c->ssl) { wolfSSL_free(c->ssl); c->ssl = NULL; }
     if (c->fd != INVALID_SOCKET) { closesocket(c->fd); c->fd = INVALID_SOCKET; }
-    if (c->reading_payload) { ZC_Pool_Release(eng, c->rx_pool_idx); c->reading_payload = false; }
+    if (c->reading_payload) { S_spisok_off(eng, c->rx_pool_idx); c->reading_payload = false; }
     c->header_bytes_read = 0; c->payload_bytes_read = 0;
 
     EnterCriticalSection(&c->tx_lock);
     while (c->tx_tail != c->tx_head) {
-        ZC_Pool_Release(eng, c->tx_pool_indexes[c->tx_tail]);
+        S_spisok_off(eng, c->tx_pool_indexes[c->tx_tail]);
         c->tx_tail = (c->tx_tail + 1) % 64;
     }
     LeaveCriticalSection(&c->tx_lock);
@@ -841,9 +812,6 @@ static void ZC_ForceDisconnect(zc_engine_t* eng, SocketType t) {
     c->backoff_ms = min(c->backoff_ms * 2, 30000);
 }
 
-// ==============================================================================
-// 5. АУДИОКОЛБЭК (без изменений)
-// ==============================================================================
 
 void ZC_AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 fCount) {
     zc_engine_t* eng = (zc_engine_t*)pDevice->pUserData;
@@ -874,9 +842,6 @@ void ZC_AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_
     }
 }
 
-// ==============================================================================
-// 6. API ЖИЗНЕННОГО ЦИКЛА (ИСПРАВЛЕННЫЙ)
-// ==============================================================================
 
 static void CreateDirectoryRecursive(const char* path) {
     char tmp[MAX_PATH];
@@ -896,9 +861,10 @@ static void CreateDirectoryRecursive(const char* path) {
     CreateDirectoryA(tmp, NULL);
 }
 
-zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(int channel, uint8_t* data, uint32_t len, uint32_t orig_len)) {
+zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(SocketType channel, uint8_t* data, uint32_t len, uint32_t orig_len)) {
     srand((unsigned int)GetTickCount64());
-    WSADATA wsa; if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) return NULL;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return NULL;
     wolfSSL_Init();
 
     zc_engine_t* eng = (zc_engine_t*)calloc(1, sizeof(zc_engine_t));
@@ -908,32 +874,33 @@ zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(int cha
     eng->audio_sample_rate = eng->is_legacy_cpu ? AUDIO_RATE_LQ : AUDIO_RATE_HQ;
     eng->audio_rb_size = eng->audio_sample_rate * 4;
     eng->last_app_ping_time = GetTickCount64();
-    eng->on_message = on_message;   // ← сохраняем callback
+    eng->on_message = on_message;   // тип соответствует
 
     CreateDirectoryRecursive("downloads");
 
     InitializeCriticalSection(&eng->pool_lock);
-    eng->disk_semaphore = CreateSemaphore(NULL, 0, DISK_QUEUE_MAX, NULL);
 
-    #ifdef WOLFSSL_TLS13
-        WOLFSSL_METHOD* method = wolfTLSv1_3_client_method();
-    #else
-        WOLFSSL_METHOD* method = wolfTLSv1_2_client_method();
-    #endif
+#ifdef WOLFSSL_TLS13
+    WOLFSSL_METHOD* method = wolfTLSv1_3_client_method();
+#else
+    WOLFSSL_METHOD* method = wolfTLSv1_2_client_method();
+#endif
     eng->ctx_tls = wolfSSL_CTX_new(method);
-    if (!eng->ctx_tls) { free(eng); return NULL; }
-    
-    wolfSSL_CTX_set_cipher_list(eng->ctx_tls, 
+    if (!eng->ctx_tls) {
+        free(eng);
+        return NULL;
+    }
+
+    wolfSSL_CTX_set_cipher_list(eng->ctx_tls,
         "TLS13-AES128-GCM-SHA256:TLS13-AES256-GCM-SHA384:TLS13-CHACHA20-POLY1305-SHA256:"
         "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256");
-    
     wolfSSL_CTX_set_verify(eng->ctx_tls, WOLFSSL_VERIFY_NONE, NULL);
     wolfSSL_CTX_set_timeout(eng->ctx_tls, 30);
 
-    #ifdef WOLFSSL_CALLBACKS
-        wolfSSL_SetIOSend(eng->ctx_tls, MyIOSend);
-        wolfSSL_SetIORecv(eng->ctx_tls, MyIORecv);
-    #endif
+#ifdef WOLFSSL_CALLBACKS
+    wolfSSL_SetIOSend(eng->ctx_tls, IO_Send);
+    wolfSSL_SetIORecv(eng->ctx_tls, IO_recv);
+#endif
 
     eng->audio_rb = (float*)calloc(eng->audio_rb_size, sizeof(float));
     eng->enc = opus_encoder_create(eng->audio_sample_rate, 1, OPUS_APPLICATION_VOIP, NULL);
@@ -942,20 +909,26 @@ zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(int cha
     if (!eng->audio_rb || !eng->enc || !eng->dec) {
         if (eng->enc) opus_encoder_destroy(eng->enc);
         if (eng->dec) opus_decoder_destroy(eng->dec);
-        free(eng->audio_rb); wolfSSL_CTX_free(eng->ctx_tls); free(eng); return NULL;
+        free(eng->audio_rb);
+        wolfSSL_CTX_free(eng->ctx_tls);
+        free(eng);
+        return NULL;
     }
 
     if (eng->is_legacy_cpu) {
-        opus_encoder_ctl(eng->enc, OPUS_SET_COMPLEXITY(1)); 
+        opus_encoder_ctl(eng->enc, OPUS_SET_COMPLEXITY(1));
         opus_encoder_ctl(eng->enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-        opus_encoder_ctl(eng->enc, OPUS_SET_BITRATE(12000)); 
+        opus_encoder_ctl(eng->enc, OPUS_SET_BITRATE(12000));
     }
 
     ma_device_config cfg = ma_device_config_init(ma_device_type_duplex);
-    cfg.capture.format = ma_format_s16; cfg.sampleRate = eng->audio_sample_rate;
-    cfg.dataCallback = ZC_AudioCallback; cfg.pUserData = eng;
+    cfg.capture.format = ma_format_s16;
+    cfg.sampleRate = eng->audio_sample_rate;
+    cfg.dataCallback = ZC_AudioCallback;
+    cfg.pUserData = eng;
     if (ma_device_init(NULL, &cfg, &eng->audio_dev) == MA_SUCCESS) {
-        eng->audio_dev_init = true; ma_device_start(&eng->audio_dev);
+        eng->audio_dev_init = true;
+        ma_device_start(&eng->audio_dev);
     }
 
     for (int i = 0; i < SOCK_MAX; i++) {
@@ -963,12 +936,11 @@ zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(int cha
         eng->conns[i].fd = INVALID_SOCKET;
         eng->conns[i].backoff_ms = 1000;
         eng->conns[i].current_ip_idx = i % IP_POOL_SIZE;
-        eng->conns[i].expected_header_len = (i == SOCK_TEXT || i == SOCK_SYSTEM) ? 8 : 4;
+        eng->conns[i].expected_header_len = (i == SOCK_TEXT || i == SOCK_SYSTEM || i == SOCK_MEDIA) ? 8 : 4;
     }
 
     eng->running = true;
     eng->worker_thread = CreateThread(NULL, 0, ZC_Worker, eng, 0, NULL);
-    eng->disk_thread = CreateThread(NULL, 0, ZC_DiskWorker, eng, 0, NULL);
 
     return eng;
 }
@@ -977,31 +949,48 @@ void ZC_DestroyEngine(zc_engine_t* eng) {
     if (!eng) return;
     eng->running = false;
 
+    // Закрываем все сокеты, чтобы разбудить select в worker
     for (int i = 0; i < SOCK_MAX; i++) {
         if (eng->conns[i].fd != INVALID_SOCKET) {
             closesocket(eng->conns[i].fd);
+            eng->conns[i].fd = INVALID_SOCKET;
         }
     }
 
-    ReleaseSemaphore(eng->disk_semaphore, 1, NULL);
-    
-    if (eng->worker_thread) { WaitForSingleObject(eng->worker_thread, INFINITE); CloseHandle(eng->worker_thread); }
-    if (eng->disk_thread) { WaitForSingleObject(eng->disk_thread, INFINITE); CloseHandle(eng->disk_thread); }
-    
-    CloseHandle(eng->disk_semaphore);
+    // Ожидаем завершения worker-потока
+    if (eng->worker_thread) {
+        WaitForSingleObject(eng->worker_thread, INFINITE);
+        CloseHandle(eng->worker_thread);
+    }
 
-    if (eng->audio_dev_init) ma_device_uninit(&eng->audio_dev);
-    opus_encoder_destroy(eng->enc); opus_decoder_destroy(eng->dec);
+    // Освобождаем аудио
+    if (eng->audio_dev_init) {
+        ma_device_uninit(&eng->audio_dev);
+    }
+    opus_encoder_destroy(eng->enc);
+    opus_decoder_destroy(eng->dec);
 
+    // Закрываем соединения (очищаем очереди пакетов и прочее)
     for (int i = 0; i < SOCK_MAX; i++) {
-        ZC_ForceDisconnect(eng, (SocketType)i);
+        S_d(eng, (SocketType)i);
         DeleteCriticalSection(&eng->conns[i].tx_lock);
     }
 
     DeleteCriticalSection(&eng->pool_lock);
     wolfSSL_CTX_free(eng->ctx_tls);
-    free(eng->audio_rb); free(eng);
-    wolfSSL_Cleanup(); WSACleanup();
+    free(eng->audio_rb);
+    free(eng);
+
+    wolfSSL_Cleanup();
+    WSACleanup();
+}
+
+void ZC_Reconnect(zc_engine_t* eng, int channel) {
+    if (!eng || channel < 0 || channel >= SOCK_MAX) return;
+    zc_connection_t* c = &eng->conns[channel];
+    S_d(eng, channel);
+    c->backoff_ms = 1000;
+    c->next_retry_time = 0; 
 }
 
 
@@ -1121,7 +1110,6 @@ void zc_sw(short x, short y){
 
 
 int main(int argc, char** argv) {
-	
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
     RegisterClassEx(&wc);
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Zipcord"), WS_OVERLAPPEDWINDOW, 100, 100, 1920, 1080, NULL, NULL, wc.hInstance, NULL);
@@ -1138,59 +1126,60 @@ int main(int argc, char** argv) {
     igCreateContext(NULL);
     ImGuiIO* io = igGetIO();
     io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-	int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
 
-	ImFontAtlas* atlas = igGetIO()->Fonts;
-	const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
+    int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
+    ImFontAtlas* atlas = igGetIO()->Fonts;
+    const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
+    ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
 
-	ImFont* myFont = ImFontAtlas_AddFontFromMemoryTTF(
-		atlas, 
-		_binary_museo_ttf_start, 
-		font_data_size, 
-		24.0f, 
-		NULL, 
-		ranges
-	);
-	//ImFont* font = ImFontAtlas_AddFontFromFileTTF(atlas, "C:\\Windows\\Fonts\\segoeui.ttf", 26.0f, NULL, NULL);
-	
     igStyleColorsDark(NULL);
-
     cImGui_ImplWin32_Init(hwnd);
     cImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     ImVec4 clear_color = { 0.45f, 0.55f, 0.60f, 1.00f };
 
-	zc_engine_t* zc = ZC_CreateEngine(false, ZC_Handler); // false = потужный пк, true = калькулятор
-	if (!zc) {
-		return 12;
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        return -1;
     }
-	
+    if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+        WSACleanup();
+        return -1;
+    }
 
-	
-	
-	chat* chat_schas = malloc(sizeof(chat));
-	user* usrs;
-	chat* chats;
-	uint16_t g_cid;
-	
-	bool done = false;
-    while (!done)
-    {
+    zc_engine_t* zc = ZC_CreateEngine(false, ZC_Handler); // false = мощный ПК
+    if (!zc) {
+        wolfSSL_Cleanup();
+        WSACleanup();
+        cImGui_ImplDX11_Shutdown();
+        cImGui_ImplWin32_Shutdown();
+        igDestroyContext(NULL);
+        CleanupDeviceD3D();
+        DestroyWindow(hwnd);
+        UnregisterClass(wc.lpszClassName, wc.hInstance);
+        return 12;
+    }
+
+    chat* chat_schas = malloc(sizeof(chat));
+    user* usrs;
+    chat* chats;
+    uint16_t g_cid;
+
+    bool done = false;
+    while (!done) {
         if (IsIconic(hwnd)) {
             Sleep(50);
-            
             MSG msg;
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
                 if (msg.message == WM_QUIT) done = true;
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
-            continue; 
+            continue;
         }
 
         MSG msg;
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
-        {
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) done = true;
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -1200,35 +1189,29 @@ int main(int argc, char** argv) {
         cImGui_ImplDX11_NewFrame();
         cImGui_ImplWin32_NewFrame();
         igNewFrame();
-		float x, y;
-		x=io->DisplaySize.x;
-		y=io->DisplaySize.y;
 
-		zc_chat(x, y, chat_schas);
-		zc_voice(x, y);
-		zc_sw(x, y);
-		
+        float x = io->DisplaySize.x;
+        float y = io->DisplaySize.y;
+
+        zc_chat(x, y, chat_schas);
+        zc_voice(x, y);
+        zc_sw(x, y);
+
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
         float clear_color_with_alpha[4] = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
         g_pd3dDeviceContext->lpVtbl->ClearRenderTargetView(g_pd3dDeviceContext, g_mainRenderTargetView, clear_color_with_alpha);
-        
+
         cImGui_ImplDX11_RenderDrawData(igGetDrawData());
 
         g_pSwapChain->lpVtbl->Present(g_pSwapChain, 1, 0);
-        MsgWaitForMultipleObjects(0, NULL, FALSE, INFINITE, QS_ALLINPUT); 
-        // if (GetForegroundWindow() != hwnd) {
-        //     Sleep(100); 
-        // }
+        MsgWaitForMultipleObjects(0, NULL, FALSE, INFINITE, QS_ALLINPUT);
     }
-	// free svoe
-	if(zc) {ZC_DestroyEngine(zc);}
-	
-	free(chat_schas);
-	
 
-	
+    ZC_DestroyEngine(zc);
+    free(chat_schas);
+
     cImGui_ImplDX11_Shutdown();
     cImGui_ImplWin32_Shutdown();
     igDestroyContext(NULL);
