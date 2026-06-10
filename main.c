@@ -1138,12 +1138,60 @@ static void zc_sw(short x, short y){
 	
 	igEnd();
 }
+// Требуется глобальный или доступный ID3D11Device* g_pd3dDevice
+bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
+{
+    int image_width = 0, image_height = 0;
+    // Загрузка RGBA данных (4 канала)
+    unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
+    if (!image_data) return false;
 
-static void zc_login(short x, short y){    
+    // Настройка дескриптора текстуры
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = image_width,
+        .Height = image_height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc.Count = 1,
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE
+    };
+
+    D3D11_SUBRESOURCE_DATA subResource = {
+        .pSysMem = image_data,
+        .SysMemPitch = image_width * 4
+    };
+
+    ID3D11Texture2D* pTexture = NULL;
+    // Создание текстуры
+    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    stbi_image_free(image_data); // Освобождаем память stb
+
+    if (!pTexture) return false;
+
+    // Создание SRV
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+        .Format = desc.Format,
+        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+        .Texture2D.MipLevels = desc.MipLevels
+    };
+    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
+    pTexture->lpVtbl->Release(pTexture); // Освобождаем текстуру
+
+    if (FAILED(hr)) return false;
+
+    *out_width = image_width;
+    *out_height = image_height;
+    return true;
+}
+
+
+static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
 	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
 	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
-		
+	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 	
 	igEnd();
 }
@@ -1355,7 +1403,9 @@ int main(int argc, char** argv) {
 	// 		gm.con = false;
 	// 	}
 	// }
-
+	ID3D11ShaderResourceView* aaa;
+	int w_a, h_a;
+	LoadTextureFromFile("zipcord2.png", &aaa, &w_a, &h_a);
     bool done = false;
     while (!done) {
         if (IsIconic(hwnd)) {
@@ -1391,7 +1441,7 @@ int main(int argc, char** argv) {
 	    }
 		if(gm.set){zc_settings(x, y);}
 		if(gm.reg){zc_register(x, y);}
-		if(gm.login){zc_login(x, y);}
+		if(gm.login){zc_login(x, y, aaa);}
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
