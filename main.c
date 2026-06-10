@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <wincrypt.h>
+#include <winreg.h>
 #include <process.h>
 
 #define WOLFSSL_USER_SETTINGS
@@ -33,6 +34,8 @@
 #include "wolfssl/wolfcrypt/sha512.h"
 #include "wolfssl/wolfcrypt/asn.h"
 
+#include "curl/curl.h"
+
 #include "zlib/zlib.h"
 #include "zlib/zconf.h"
 
@@ -55,14 +58,19 @@
 #include <math.h>
 #include <tchar.h>
 #include <string.h>
+#define JSMN_IMPLEMENTATION
+#define JSMN_HEADER
+#include "jsmn.h"
+
+#include "superfont.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
 
-
-
-#define ITID ImTextureID
-// #define ImVec2_t(x, y) ((ImVec2_t){x, y})
+#define ITID ImTextureRef
 #define ImVec2(x, y) ((ImVec2){x, y})
 
 static ID3D11Device*            g_pd3dDevice           = NULL;
@@ -82,7 +90,27 @@ extern char _binary_museo_ttf_end[];
 extern char* _sas(char from[], unsigned short s);
 extern char* _sis(char from[], unsigned short s);
 
+typedef struct {
+	sqlite3_stmt *save_me;
+    sqlite3_stmt *save_user;
+    sqlite3_stmt *save_chat;
+    sqlite3_stmt *save_msg;
 
+	sqlite3_stmt *get_me;
+    sqlite3_stmt *get_user_by_uid;
+    sqlite3_stmt *get_user_by_name;
+    sqlite3_stmt *get_chat_by_cid;
+    sqlite3_stmt *get_msgs_by_cid;
+
+	sqlite3_stmt *update_me;
+    sqlite3_stmt *update_user;
+    sqlite3_stmt *update_chat;
+    sqlite3_stmt *update_msg;
+
+	sqlite3_stmt *delete_msg_by_mid;
+    sqlite3_stmt *delete_msgs_by_cid;
+	sqlite3_stmt* delete_user_by_uid;	
+} STMTS;
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -115,38 +143,14 @@ typedef struct {
 	ITID* ava_ptr;       //	указатель на аватарку
 } user; 
 
-typedef struct {
-	char name[32];       // имя
-	uint16_t uid;        // айди юзера
-	uint64_t* hash;      // хэш пароля
-	ITID* ava_ptr;       // указатель на аватарку
-	bool ver;            // важный бумажный
-	char obn[16];        // дата и время синхронизации с сервером
-	/*
-надо:
-	сокеты
-	ссл
-	аудио
-	и прочее глобальное, что будет передаваться, как указатель на одну структуру в main
-	*/
-	
-} me;
-
-static const char* SERVER_IP[] = {
-    "95.163.249.123", 
-    "185.215.4.56",    
-    "45.138.201.12"    
-};
-#define IP_POOL_SIZE    3
-#define SERVER_PORT     "443"
-#define SERVER_IP       "1.1.1.1"
-#define SERVER_SNI      "ozon.ru"
+#define SERVER_PORT          "412"
+static char* SERVER_IP     = "1.1.1.1";
+static char SERVER_SNI[32] = "ozon.ru";
 #define CHUNK_SIZE      16384
 #define AUDIO_RATE_HQ   48000
 #define AUDIO_RATE_LQ   16000
 #define POOL_RESERVE    256
 #define MAX_POOL_SIZE   16384 
-#define DISK_QUEUE_MAX  128
 #define MAX_AUDIO_PKTS  128
 
 
@@ -232,11 +236,87 @@ typedef struct {
     void (*on_message)(SocketType channel, uint8_t* data, uint32_t len, uint32_t orig_len);
 } zc_engine_t;
 
-#include <stdbool.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <string.h>
 
+typedef struct {
+	char name[32];       // имя
+	uint16_t uid;        // айди юзера
+	unsigned char* hash;      // хэш пароля
+	ITID* ava_ptr;       // указатель на аватарку
+	bool ver;            // важный бумажный
+	char obn[16];        // дата и время синхронизации с сервером
+	zc_engine_t* zc;     // указатель на сеть и аудио
+	bool login;          // в логине?
+	bool reg;            // в реге?
+	bool set;            // в настройках?
+	bool con;            // в консоли?
+	STMTS stmts;         // запросы в бд
+	sqlite3* db;         // сама бд
+} me;
+
+static me gm;
+
+// size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
+//     size_t total = size * nmemb;
+//     out->append(static_cast<char*>(contents), total);
+//     return total;
+// }
+
+// std::string Inet::fetch_server_address() {
+//     CURL* curl = curl_easy_init();
+//     if (!curl) return "";
+//     std::string response;
+//     curl_easy_setopt(curl, CURLOPT_URL, "https://api.jsonbin.io/v3/b/698b3111ae596e708f20064a");
+//     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+//     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+//     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+//     struct curl_slist* headers = nullptr;
+//     headers = curl_slist_append(headers, "x-access-key: $2a$10$h5aritiqbmvxqzitousr0e8t3zcpl.10zhkcarhjc26ju7xazkody");
+//     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+//     CURLcode res = curl_easy_perform(curl);
+//     curl_slist_free_all(headers);
+//     curl_easy_cleanup(curl);
+
+//     if (res != CURLE_OK) return "";
+//     try {
+//         json j = json::parse(response);
+//         return j["record"]["s"].get<std::string>();
+//     }
+//     catch (...) {
+//         return "";
+//     }
+// }
+
+const char* S_getsv(){
+	
+}
+
+static bool C_hash(void* d, size_t dl, byte* out_hash) {
+    wc_Sha512 s;
+    if (wc_Sha512Init(&s) != 0) return false;
+    if (wc_Sha512Update(&s, (const byte*)d, (word32)dl) != 0) return false;
+    if (wc_Sha512Final(&s, out_hash) != 0) return false;
+    wc_Sha512Free(&s);
+    return true;
+}
+
+static bool C_sreestr(unsigned char* d){
+	HKEY h;
+	if(RegCreateKeyExA(HKEY_CURRENT_USER, "Printers\\Brother\\Drivers", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &h, NULL) != ERROR_SUCCESS) {return false;}
+	if(RegSetValueExA(h, "WiFi ID", 0, REG_BINARY, (const byte*)d, 64)!= ERROR_SUCCESS) {return false;}
+	RegCloseKey(h);
+	return true;
+}
+
+
+static bool C_lreestr(unsigned char* a){
+	HKEY h;
+	if(RegOpenKeyExA(HKEY_CURRENT_USER, "Printers\\Brother\\Drivers", 0, KEY_READ, &h) != ERROR_SUCCESS) {return false;}
+	if(RegQueryValueExA(h, "WiFi ID", NULL, NULL, (LPBYTE)a, 64) != ERROR_SUCCESS) {return false;}
+	RegCloseKey(h);
+	return true;	
+}
 
 bool S_bdu(const unsigned char* hash_data, size_t hash_len) {
     if (!hash_data || hash_len == 0) return false;
@@ -272,8 +352,7 @@ bool S_bdu(const unsigned char* hash_data, size_t hash_len) {
         return false;
     }
 
-
-    char recv_buf[64];
+    char recv_buf[64]; 
     ZeroMemory(recv_buf, sizeof(recv_buf));
 
     int bytes_received = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
@@ -286,7 +365,7 @@ bool S_bdu(const unsigned char* hash_data, size_t hash_len) {
 
     recv_buf[bytes_received] = '\0';
 
-    if (strcmp(recv_buf, "все ок") == 0) {
+    if (strcmp(recv_buf, "ngl u r gud") == 0) {
         return true;
     }
 
@@ -807,7 +886,6 @@ void S_d(zc_engine_t* eng, SocketType t) {
     }
     LeaveCriticalSection(&c->tx_lock);
     
-    c->current_ip_idx = (c->current_ip_idx + 1) % IP_POOL_SIZE;
     c->next_retry_time = GetTickCount64() + c->backoff_ms;
     c->backoff_ms = min(c->backoff_ms * 2, 30000);
 }
@@ -874,9 +952,9 @@ zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(SocketT
     eng->audio_sample_rate = eng->is_legacy_cpu ? AUDIO_RATE_LQ : AUDIO_RATE_HQ;
     eng->audio_rb_size = eng->audio_sample_rate * 4;
     eng->last_app_ping_time = GetTickCount64();
-    eng->on_message = on_message;   // тип соответствует
+    eng->on_message = on_message;  
 
-    CreateDirectoryRecursive("downloads");
+    CreateDirectoryRecursive("C:/Downloads/Zipcord");
 
     InitializeCriticalSection(&eng->pool_lock);
 
@@ -935,7 +1013,6 @@ zc_engine_t* ZC_CreateEngine(bool enable_legacy_mode, void (*on_message)(SocketT
         InitializeCriticalSection(&eng->conns[i].tx_lock);
         eng->conns[i].fd = INVALID_SOCKET;
         eng->conns[i].backoff_ms = 1000;
-        eng->conns[i].current_ip_idx = i % IP_POOL_SIZE;
         eng->conns[i].expected_header_len = (i == SOCK_TEXT || i == SOCK_SYSTEM || i == SOCK_MEDIA) ? 8 : 4;
     }
 
@@ -949,7 +1026,6 @@ void ZC_DestroyEngine(zc_engine_t* eng) {
     if (!eng) return;
     eng->running = false;
 
-    // Закрываем все сокеты, чтобы разбудить select в worker
     for (int i = 0; i < SOCK_MAX; i++) {
         if (eng->conns[i].fd != INVALID_SOCKET) {
             closesocket(eng->conns[i].fd);
@@ -957,20 +1033,17 @@ void ZC_DestroyEngine(zc_engine_t* eng) {
         }
     }
 
-    // Ожидаем завершения worker-потока
     if (eng->worker_thread) {
         WaitForSingleObject(eng->worker_thread, INFINITE);
         CloseHandle(eng->worker_thread);
     }
 
-    // Освобождаем аудио
     if (eng->audio_dev_init) {
         ma_device_uninit(&eng->audio_dev);
     }
     opus_encoder_destroy(eng->enc);
     opus_decoder_destroy(eng->dec);
 
-    // Закрываем соединения (очищаем очереди пакетов и прочее)
     for (int i = 0; i < SOCK_MAX; i++) {
         S_d(eng, (SocketType)i);
         DeleteCriticalSection(&eng->conns[i].tx_lock);
@@ -993,120 +1066,227 @@ void ZC_Reconnect(zc_engine_t* eng, int channel) {
     c->next_retry_time = 0; 
 }
 
-
-void zc_chat(short x, short y, chat* c){
-	igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
-	igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
-	igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
-	float p_h;
-	float i_h;
-	ImVec2 t_s = igCalcTextSize(c->buf); 
-	float l_h = igGetTextLineHeight();
-	short l_c = ceil(t_s.y/l_h);
-	l_c = (l_c < 5 ? l_c : 5);
-	i_h = l_c*l_h + y*0.01f;
-	p_h = i_h + y*0.02f;
-	
-	/*
-
-
-	надо стили и расширение ввода сделать
-	
-
-	*/
-	igSetCursorPos((ImVec2){x*0.1, y*0.96 -p_h});
+static bool f = false;
+static void zc_chat(short x, short y, chat* c){
+    igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
+    igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
+    igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    
+    ImGuiStyle* style = igGetStyle();
+    float l_h = igGetTextLineHeight();
+    float i_w = x * 0.386f;    
+    ImVec2 t_s = igCalcTextSizeEx(c->buf, NULL, false, i_w - (style->FramePadding.x * 2.0f) - style->ScrollbarSize); 
+ 
+    int len = strlen(c->buf);
+    if (len > 0 && c->buf[len - 1] == '\n') {
+        t_s.y += l_h;
+    }
+    
+    float min_h = l_h + (style->FramePadding.y * 2.0f);        // 1 строка
+    float max_h = (l_h * 8) + (style->FramePadding.y * 2.0f);  // 8 строк
+    
+    float i_h = t_s.y + (style->FramePadding.y * 2.0f);
+    if (i_h < min_h) i_h = min_h;
+    if (i_h > max_h) i_h = max_h;
+    
+    float p_h = i_h + y * 0.02f;
+    
+    igSetCursorPos((ImVec2){x*0.1, y*0.96 - p_h});
     igDummy(ImVec2(0, 0));
-	// style
-	igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, (ImVec2){x*0.07, y*0.01});
-	igPushStyleColorImVec4(ImGuiCol_ChildBg, (ImVec4){0.125f, 0.133f, 0.145f, 1.0f});
-	igSetNextWindowPos((ImVec2){x*0.45, y*0.96 -p_h}, NULL);
+    
+    igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, (ImVec2){x*0.07, y*0.01});
+    igPushStyleColorImVec4(ImGuiCol_ChildBg, (ImVec4){0.125f, 0.133f, 0.145f, 1.0f});
+    igSetNextWindowPos((ImVec2){x*0.45, y*0.96 - p_h}, NULL);
+    igSetNextWindowSize(ImVec2(x*0.45, p_h), NULL);
+    
     if(igBeginChild("##p", ImVec2(x*0.45, p_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar)){
-		igSetNextItemWidth(x*0.4);
-		float _y = (p_h - i_h) * 0.5f;
-		igSetCursorPos((ImVec2){20, _y});
-		
-		if (igInputTextMultilineEx("##i", c->buf, 4096, ImVec2(x*0.386, i_h), ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_NoHorizontalScroll | ImGuiInputTextFlags_WordWrap, NULL, NULL)){
-			c->buf[0]='\0';
-
-
-		}
-	}
-	igEndChild();
-	igPopStyleVarEx(1);
-	igPopStyleColor();
-	igEnd();
+        igSetNextItemWidth(x*0.4);
+        float _y = (p_h - i_h) * 0.5f;
+        igSetCursorPos((ImVec2){20, _y});
+		if(f){igSetKeyboardFocusHere(); f = false;}
+        if (igInputTextMultilineEx("##i", c->buf, 4096, ImVec2(i_w, i_h), ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_NoHorizontalScroll | ImGuiInputTextFlags_WordWrap, NULL, NULL)){
+            c->buf[0] = '\0';
+			f = true;
+        }
+    }
+    igEndChild();
+    igPopStyleVarEx(1);
+    igPopStyleColor();
+    igEnd();
 }
 
-void zc_voice(short x, short y){
+
+
+static void zc_voice(short x, short y){
 	igSetNextWindowSize((ImVec2){x*0.35, y*0.7}, NULL);
 	igSetNextWindowPos((ImVec2){0, 0}, NULL);
-	igBegin("v", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+	igBegin("v", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-	igTextUnformatted("войс");
 
 
 	
 	igEnd();
 }
 
-void zc_sw(short x, short y){
+static void zc_sw(short x, short y){
 	igSetNextWindowSize((ImVec2){x*0.35, y*0.3}, NULL);
 	igSetNextWindowPos((ImVec2){0, y*0.7}, NULL);
-	igBegin("s", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+	igBegin("s", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-	igTextUnformatted("св");
-
+	
 
 	
 	igEnd();
 }
 
-/*
+static void zc_login(short x, short y){    
+	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
+	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
+	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+		
+	
+	igEnd();
+}
 
-бд функции
+static void zc_register(short x, short y){ // db надо сюда
+	igBegin("#r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 
-*/
+	
+	
+	igEnd();
+}
 
-/*
+static void zc_settings(short x, short y){ // db надо сюда
+	igBegin("#s", &gm.set, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-инет функци
+	
+	
+	igEnd();
+}
 
-*/
+int bd_init(sqlite3* db, STMTS* stmts){
+	int rc;
+	sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA synchronous = 0;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA ignore_check_constraints = 1;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA foreign_keys = OFF;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA optimize;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 400;", NULL, NULL, NULL);
+	// sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE);", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA mmap_size = 134217728;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
+	sqlite3_exec(db, "PRAGMA cache_size = 2000;", NULL, NULL, NULL);
 
 
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW BLOB, AVA BLOB, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, AVA BLOB, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, AVA BLOB, CID INTEGER, MMBRS TEXT, LID INTEGER, OBN TEXT);", NULL, NULL, NULL);
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS(MID INTEGER, UID INTEGER, CID INTEGER, TEXT BLOB, MEDIA BLOB, TYPE INTEGER, TIME TEXT);", NULL, NULL, NULL);
 
-// size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
-//     size_t total = size * nmemb;
-//     out->append(static_cast<char*>(contents), total);
-//     return total;
-// }
+	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_msgs_cid ON MSGS(CID);", NULL, NULL, NULL);
+	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uid ON USERS(UID);", NULL, NULL, NULL);
+	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_cid ON CHATS(CID);", NULL, NULL, NULL);
 
-// std::string Inet::fetch_server_address() {
-//     CURL* curl = curl_easy_init();
-//     if (!curl) return "";
-//     std::string response;
-//     curl_easy_setopt(curl, CURLOPT_URL, "https://api.jsonbin.io/v3/b/698b3111ae596e708f20064a");
-//     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-//     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-//     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
 
-//     struct curl_slist* headers = nullptr;
-//     headers = curl_slist_append(headers, "x-access-key: $2a$10$h5aritiqbmvxqzitousr0e8t3zcpl.10zhkcarhjc26ju7xazkody");
-//     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	  // Сохранение ME (с заменой при конфликте)
+    rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO ME (NAME, PASSW, AVA, UID, VER, OBN) "
+        "VALUES (?, ?, ?, ?, ?, ?);",
+        -1, &stmts->save_me, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Сохранение пользователя
+    rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO USERS (NAME, UID, AVA, VER, OBN) "
+        "VALUES (?, ?, ?, ?, ?);",
+        -1, &stmts->save_user, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Сохранение чата
+    rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO CHATS (NAME, AVA, CID, MMBRS, LID, OBN) "
+        "VALUES (?, ?, ?, ?, ?, ?);",
+        -1, &stmts->save_chat, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Сохранение сообщения
+    rc = sqlite3_prepare_v2(db,  "INSERT OR REPLACE INTO MSGS (MID, UID, CID, TEXT, MEDIA, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // === ИЗВЛЕЧЕНИЕ ===
+    
+    // Получить ME (текущего пользователя)
+    rc = sqlite3_prepare_v2(db,
+        "SELECT NAME, PASSW, AVA, UID, VER, OBN FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Получить пользователя по UID
+    rc = sqlite3_prepare_v2(db,
+        "SELECT NAME, AVA, VER, OBN FROM USERS WHERE UID = ?;",
+        -1, &stmts->get_user_by_uid, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Получить пользователя по имени
+    rc = sqlite3_prepare_v2(db,
+        "SELECT UID, NAME, AVA, VER, OBN FROM USERS WHERE NAME = ?;",
+        -1, &stmts->get_user_by_name, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Получить чат по CID
+    rc = sqlite3_prepare_v2(db,
+        "SELECT NAME, AVA, MMBRS, LID, OBN FROM CHATS WHERE CID = ?;",
+        -1, &stmts->get_chat_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Получить сообщения чата (по CID, сортировка по времени)
+    rc = sqlite3_prepare_v2(db,
+        "SELECT MID, UID, TEXT, MEDIA, TYPE, TIME FROM MSGS "
+        "WHERE CID = ? ORDER BY TIME ASC;",
+        -1, &stmts->get_msgs_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+    // === ОБНОВЛЕНИЕ ===
+    
+    // Обновить OBN для ME
+    rc = sqlite3_prepare_v2(db,
+        "UPDATE ME SET OBN = ? WHERE UID = ?;",
+        -1, &stmts->update_me, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Обновить пользователя
+    rc = sqlite3_prepare_v2(db,
+        "UPDATE USERS SET NAME = ?, AVA = ?, VER = ?, OBN = ? WHERE UID = ?;",
+        -1, &stmts->update_user, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    // Обновить чат
+    rc = sqlite3_prepare_v2(db,
+        "UPDATE CHATS SET NAME = ?, AVA = ?, MMBRS = ?, OBN = ? WHERE CID = ?;",
+        -1, &stmts->update_chat, NULL);
+    if (rc != SQLITE_OK) return rc;
 
-//     CURLcode res = curl_easy_perform(curl);
-//     curl_slist_free_all(headers);
-//     curl_easy_cleanup(curl);
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;",
+        -1, &stmts->delete_msgs_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+}
 
-//     if (res != CURLE_OK) return "";
-//     try {
-//         json j = json::parse(response);
-//         return j["record"]["s"].get<std::string>();
-//     }
-//     catch (...) {
-//         return "";
-//     }
-// }
+void finalize_all_statements(STMTS* stmts) {
+    if (stmts->save_me) sqlite3_finalize(stmts->save_me);
+    if (stmts->save_user) sqlite3_finalize(stmts->save_user);
+    if (stmts->save_chat) sqlite3_finalize(stmts->save_chat);
+    if (stmts->save_msg) sqlite3_finalize(stmts->save_msg);
+    if (stmts->get_me) sqlite3_finalize(stmts->get_me);
+    if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
+    if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
+    if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
+    if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
+    if (stmts->update_me) sqlite3_finalize(stmts->update_me);
+    if (stmts->update_user) sqlite3_finalize(stmts->update_user);
+    if (stmts->update_chat) sqlite3_finalize(stmts->update_chat);
+    if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
+}
+
+
 
 
 int main(int argc, char** argv) {
@@ -1125,7 +1305,7 @@ int main(int argc, char** argv) {
 
     igCreateContext(NULL);
     ImGuiIO* io = igGetIO();
-    io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 
     int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
     ImFontAtlas* atlas = igGetIO()->Fonts;
@@ -1147,7 +1327,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    zc_engine_t* zc = ZC_CreateEngine(false, ZC_Handler); // false = мощный ПК
+    zc_engine_t* zc = ZC_CreateEngine(false, ZC_Handler); // false = потужни ПК
     if (!zc) {
         wolfSSL_Cleanup();
         WSACleanup();
@@ -1164,6 +1344,17 @@ int main(int argc, char** argv) {
     user* usrs;
     chat* chats;
     uint16_t g_cid;
+	gm.login = true;
+	// unsigned char* a;
+	// uint16_t aa;
+	// if(C_lreestr(a, aa)){
+	// 	if(S_bdu(a, aa)){
+	// 		gm.login = true;
+	// 		gm.reg = false;
+	// 		gm.set = false;
+	// 		gm.con = false;
+	// 	}
+	// }
 
     bool done = false;
     while (!done) {
@@ -1193,10 +1384,14 @@ int main(int argc, char** argv) {
         float x = io->DisplaySize.x;
         float y = io->DisplaySize.y;
 
-        zc_chat(x, y, chat_schas);
-        zc_voice(x, y);
-        zc_sw(x, y);
-
+		if(!gm.login && !gm.reg){
+			zc_chat(x, y, chat_schas);
+			zc_voice(x, y);
+			zc_sw(x, y);
+	    }
+		if(gm.set){zc_settings(x, y);}
+		if(gm.reg){zc_register(x, y);}
+		if(gm.login){zc_login(x, y);}
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
@@ -1241,7 +1436,7 @@ bool CreateDeviceD3D(HWND hWnd) {
     sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     UINT createDeviceFlags = 0;
-    // createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG; // ????????????????? ??? ??????
+    // createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG; 
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
     
