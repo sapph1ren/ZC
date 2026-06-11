@@ -9,7 +9,7 @@ ZLIB_LIB = z
 CFLAGS = -std=c17 -O3 -s -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DNDEBUG -I.
 
 SRC = main.c sqlite3.c
-OBJS = $(SRC:.c=.o) museo.o 5.obj 4.obj
+OBJS = $(SRC:.c=.o) md3.o museo.o 5.obj 4.obj
 
 LIBS = -L./a/ -ldcig -lwolfssl -lopus -lz -ld3d11 -ld3dcompiler -ldxgi -ldxguid \
        -luser32 -lgdi32 -lshell32 -lws2_32 -lmsimg32 -lsetupapi -limm32 -lm -lssp \

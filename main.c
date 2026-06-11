@@ -62,8 +62,6 @@
 #define JSMN_HEADER
 #include "jsmn.h"
 
-#include "superfont.h"
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -86,6 +84,9 @@ extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wPara
 
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
+
+extern char _binary_md3_ttf_start[];
+extern char _binary_md3_ttf_end[];
 
 extern char* _sas(char from[], unsigned short s);
 extern char* _sis(char from[], unsigned short s);
@@ -1199,7 +1200,8 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
 	igText("Авторизация");
 	igSetWindowFontScale(1.0f);
-	
+
+	igPushItemWidth(x*0.26);
 	igSetCursorPosX(x*0.37);
 	igText("Логин:");
 	igInputText("#ll", &l, 32, ImGuiInputTextFlags_None);
@@ -1208,16 +1210,18 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 
 	igText("Пароль:");
 	igInputText("#lp", &p, 32, ImGuiInpuTextFlags_Password);
-
+	igPopItemWidth();
 	igSpacing(); igSpacing();
 
-	igSetCursorPosX(x*0.46);
+	igSetCursorPos(ImVec2(x*0.46, y*0.86));
 	if(igButtonEx("Войти", ImVec2(x*0.08, y*0.03))){
 		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
 		
 	}
-	
-	
+
+	igSetCursorPosX(x*0.37);
+	igTextDisabled("*ваш аккаунт только для вас!");
+		
 	igEnd();
 }
 
@@ -1229,6 +1233,24 @@ static void zc_register(short x, short y){ // db надо сюда
 	igEnd();
 }
 
+
+
+/*
+
+смена имени
+смена пароля
+смена аватарки
+просмотр текущей аватарки
+просмотр айди
+калькуляторный режим
+служба поддержки
+замена sni 
+поменять цвета интерфейса(файлом или кнопками)
+предустановленные темы
+отправлять ли в чат уведомление о заходе в войс чат
+
+
+*/
 static void zc_settings(short x, short y){ // db надо сюда
 	igBegin("#s", &gm.set, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
