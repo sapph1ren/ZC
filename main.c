@@ -1192,6 +1192,8 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
 	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
+
+	ig
 	
 	igEnd();
 }
