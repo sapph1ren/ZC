@@ -1186,14 +1186,37 @@ bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_sr
     return true;
 }
 
-
 static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
+	static char l[32];
+	static char p[32];
 	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
 	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
-	ig
+	ImVec2 aa = igCalcTextSize("Авторизация");
+	igSetWindowFontScale(2.0f);
+	igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
+	igText("Авторизация");
+	igSetWindowFontScale(1.0f);
+	
+	igSetCursorPosX(x*0.37);
+	igText("Логин:");
+	igInputText("#ll", &l, 32, ImGuiInputTextFlags_None);
+
+	igSpacing();
+
+	igText("Пароль:");
+	igInputText("#lp", &p, 32, ImGuiInpuTextFlags_Password);
+
+	igSpacing(); igSpacing();
+
+	igSetCursorPosX(x*0.46);
+	if(igButtonEx("Войти", ImVec2(x*0.08, y*0.03))){
+		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
+		
+	}
+	
 	
 	igEnd();
 }
