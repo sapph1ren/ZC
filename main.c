@@ -5,6 +5,9 @@
 #include <wincrypt.h>
 #include <winreg.h>
 #include <process.h>
+#include <wchar.h>
+#include <locale.h>
+#include <shellapi.h>
 
 #define WOLFSSL_USER_SETTINGS
 #define OPENSSL_EXTRA
@@ -156,6 +159,7 @@ static char SERVER_SNI[32] = "ozon.ru";
 
 
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
+typedef enum { CB_TEXT, CB_NONE, CB_IMAGE, CB_FILE } CBType;
 
 typedef enum {
     CONN_STATE_DISCONNECTED,
@@ -292,6 +296,100 @@ static me gm;
 const char* S_getsv(){
 	
 }
+
+CBType v_cbt(){
+	if(OpenClipBoard(NULL)){
+		if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
+        return CB_IMAGE;
+        }
+    
+        else if (IsClipboardFormatAvailable(CF_HDROP)) {
+			return CB_FILE;
+        }
+   
+        else if (IsClipboardFormatAvailable(CF_UNICODETEXT) || IsClipboardFormatAvailable(CF_TEXT)) {
+            return CB_TEXT;
+        }
+
+   
+        CloseClipboard();
+		
+	}
+	return CB_NONE;
+}
+
+char* v_gt(char* a) {
+    if (!OpenClipboard(NULL)) return "";
+
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData != NULL) {
+            wchar_t* pText = (wchar_t*)GlobalLock(hData);
+            if (pText != NULL) {
+                GlobalUnlock(hData);
+				uint32_t l = wcstombs(NULL, pText, 0);
+				wcstombs(a, pText, l+1);
+				return (char*)pText;
+				free(a);
+            }
+        }	
+
+    }
+	else if(IsClipboardFormatAvailable(CF_TEXT)){
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData != NULL) {
+            wchar_t* pText = (wchar_t*)GlobalLock(hData);
+            if (pText != NULL) {
+                GlobalUnlock(hData);
+				uint32_t l = wcstombs(NULL, pText, 0);
+				wcstombs(a, pText, l+1);
+				return (char*)pText;
+				free(a);
+            }
+        }	
+
+	}
+    CloseClipboard();
+}
+
+unsigned char* v_gf(uint32_t* fc, char* p){
+	if (!OpenClipboard(NULL)) return "";
+
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        HANDLE hData = GetClipboardData(CF_HDROP);
+        if (hData != NULL) {
+            HDROP hDrop = (HDROP)GlobalLock(hData);
+            if (hDrop != NULL) {
+                
+                UINT fс* = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+                                
+                wchar_t **filePath;
+                for (UINT i = 0; i < fileCount; i++) {
+					wchar_t a;
+					
+                    DragQueryFileW(hDrop, i, a, MAX_PATH);
+
+					vec_push(filePath, a);
+                }
+
+				// тут все файлы в векторе в zip надо бы
+				// потом вернуть путь на zip, а дальше сам очищу по DeleteFileA(путь);
+				
+				return "Аллахь къо, ыжэ сп1ысыгъэ";
+                GlobalUnlock(hData);
+            }
+        }
+    }
+    CloseClipboard();
+}
+
+unsigned char* v_gi(){
+	
+
+	
+}
+
+
 
 static bool C_hash(void* d, size_t dl, byte* out_hash) {
     wc_Sha512 s;
@@ -1248,6 +1346,7 @@ static void zc_register(short x, short y){ // db надо сюда
 поменять цвета интерфейса(файлом или кнопками)
 предустановленные темы
 отправлять ли в чат уведомление о заходе в войс чат
+синхронизировать данные
 
 
 */
