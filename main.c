@@ -298,24 +298,19 @@ const char* S_getsv(){
 }
 
 CBType v_cbt(){
-	if(OpenClipBoard(NULL)){
-		if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
-        return CB_IMAGE;
+    if(OpenClipboard(NULL)){
+        if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
+            return CB_IMAGE;
         }
-    
         else if (IsClipboardFormatAvailable(CF_HDROP)) {
-			return CB_FILE;
+            return CB_FILE;
         }
-   
         else if (IsClipboardFormatAvailable(CF_UNICODETEXT) || IsClipboardFormatAvailable(CF_TEXT)) {
             return CB_TEXT;
         }
-
-   
         CloseClipboard();
-		
-	}
-	return CB_NONE;
+    }
+    return CB_NONE;
 }
 
 char* v_gt(char* a) {
@@ -353,34 +348,30 @@ char* v_gt(char* a) {
 }
 
 unsigned char* v_gf(uint32_t* fc, char* p){
-	if (!OpenClipboard(NULL)) return "";
+    if (!OpenClipboard(NULL)) return NULL;
 
     if (IsClipboardFormatAvailable(CF_HDROP)) {
         HANDLE hData = GetClipboardData(CF_HDROP);
         if (hData != NULL) {
             HDROP hDrop = (HDROP)GlobalLock(hData);
             if (hDrop != NULL) {
-                
-                UINT fс* = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
-                                
-                wchar_t **filePath;
-                for (UINT i = 0; i < fileCount; i++) {
-					wchar_t a;
-					
-                    DragQueryFileW(hDrop, i, a, MAX_PATH);
-
-					vec_push(filePath, a);
+                *fc = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+                if (*fc > 0) {
+                    // Простейший пример: берём только первый файл
+                    wchar_t wpath[MAX_PATH];
+                    if (DragQueryFileW(hDrop, 0, wpath, MAX_PATH)) {
+                        // Конвертируем в UTF-8
+                        WideCharToMultiByte(CP_UTF8, 0, wpath, -1, p, MAX_PATH, NULL, NULL);
+                    }
                 }
-
-				// тут все файлы в векторе в zip надо бы
-				// потом вернуть путь на zip, а дальше сам очищу по DeleteFileA(путь);
-				
-				return "Аллахь къо, ыжэ сп1ысыгъэ";
                 GlobalUnlock(hData);
+                CloseClipboard();
+                return (unsigned char*)"ok"; // заглушка
             }
         }
     }
     CloseClipboard();
+    return NULL;
 }
 
 unsigned char* v_gi(){
@@ -1263,20 +1254,18 @@ bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_sr
     };
 
     ID3D11Texture2D* pTexture = NULL;
-    // Создание текстуры
     g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
-    stbi_image_free(image_data); // Освобождаем память stb
+    stbi_image_free(image_data);
 
     if (!pTexture) return false;
 
-    // Создание SRV
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
         .Format = desc.Format,
         .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
         .Texture2D.MipLevels = desc.MipLevels
     };
     HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
-    pTexture->lpVtbl->Release(pTexture); // Освобождаем текстуру
+    pTexture->lpVtbl->Release(pTexture); 
 
     if (FAILED(hr)) return false;
 
@@ -1290,7 +1279,7 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	static char p[32];
 	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
-	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igBegin("##l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
 	ImVec2 aa = igCalcTextSize("Авторизация");
@@ -1299,15 +1288,15 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	igText("Авторизация");
 	igSetWindowFontScale(1.0f);
 
-	igPushItemWidth(x*0.26);
-	igSetCursorPosX(x*0.37);
+	igPushItemWidth(x*0.271);
+	// igSetCursorPosX(x*0.37);
 	igText("Логин:");
-	igInputText("#ll", &l, 32, ImGuiInputTextFlags_None);
+	igInputText("##ll", &l, 32, ImGuiInputTextFlags_None);
 
 	igSpacing();
 
 	igText("Пароль:");
-	igInputText("#lp", &p, 32, ImGuiInpuTextFlags_Password);
+	igInputText("##lp", &p, 32, ImGuiInputTextFlags_Password);
 	igPopItemWidth();
 	igSpacing(); igSpacing();
 
@@ -1324,7 +1313,7 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 }
 
 static void zc_register(short x, short y){ // db надо сюда
-	igBegin("#r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 
 	
 	
