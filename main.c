@@ -5,6 +5,9 @@
 #include <wincrypt.h>
 #include <winreg.h>
 #include <process.h>
+#include <wchar.h>
+#include <locale.h>
+#include <shellapi.h>
 
 #define WOLFSSL_USER_SETTINGS
 #define OPENSSL_EXTRA
@@ -62,8 +65,6 @@
 #define JSMN_HEADER
 #include "jsmn.h"
 
-#include "superfont.h"
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -86,6 +87,9 @@ extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wPara
 
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
+
+extern char _binary_md3_ttf_start[];
+extern char _binary_md3_ttf_end[];
 
 extern char* _sas(char from[], unsigned short s);
 extern char* _sis(char from[], unsigned short s);
@@ -155,6 +159,7 @@ static char SERVER_SNI[32] = "ozon.ru";
 
 
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
+typedef enum { CB_TEXT, CB_NONE, CB_IMAGE, CB_FILE } CBType;
 
 typedef enum {
     CONN_STATE_DISCONNECTED,
@@ -291,6 +296,91 @@ static me gm;
 const char* S_getsv(){
 	
 }
+
+CBType v_cbt(){
+    if(OpenClipboard(NULL)){
+        if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
+            return CB_IMAGE;
+        }
+        else if (IsClipboardFormatAvailable(CF_HDROP)) {
+            return CB_FILE;
+        }
+        else if (IsClipboardFormatAvailable(CF_UNICODETEXT) || IsClipboardFormatAvailable(CF_TEXT)) {
+            return CB_TEXT;
+        }
+        CloseClipboard();
+    }
+    return CB_NONE;
+}
+
+char* v_gt(char* a) {
+    if (!OpenClipboard(NULL)) return "";
+
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData != NULL) {
+            wchar_t* pText = (wchar_t*)GlobalLock(hData);
+            if (pText != NULL) {
+                GlobalUnlock(hData);
+				uint32_t l = wcstombs(NULL, pText, 0);
+				wcstombs(a, pText, l+1);
+				return (char*)pText;
+				free(a);
+            }
+        }	
+
+    }
+	else if(IsClipboardFormatAvailable(CF_TEXT)){
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData != NULL) {
+            wchar_t* pText = (wchar_t*)GlobalLock(hData);
+            if (pText != NULL) {
+                GlobalUnlock(hData);
+				uint32_t l = wcstombs(NULL, pText, 0);
+				wcstombs(a, pText, l+1);
+				return (char*)pText;
+				free(a);
+            }
+        }	
+
+	}
+    CloseClipboard();
+}
+
+unsigned char* v_gf(uint32_t* fc, char* p){
+    if (!OpenClipboard(NULL)) return NULL;
+
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        HANDLE hData = GetClipboardData(CF_HDROP);
+        if (hData != NULL) {
+            HDROP hDrop = (HDROP)GlobalLock(hData);
+            if (hDrop != NULL) {
+                *fc = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+                if (*fc > 0) {
+                    // Простейший пример: берём только первый файл
+                    wchar_t wpath[MAX_PATH];
+                    if (DragQueryFileW(hDrop, 0, wpath, MAX_PATH)) {
+                        // Конвертируем в UTF-8
+                        WideCharToMultiByte(CP_UTF8, 0, wpath, -1, p, MAX_PATH, NULL, NULL);
+                    }
+                }
+                GlobalUnlock(hData);
+                CloseClipboard();
+                return (unsigned char*)"ok"; // заглушка
+            }
+        }
+    }
+    CloseClipboard();
+    return NULL;
+}
+
+unsigned char* v_gi(){
+	
+
+	
+}
+
+
 
 static bool C_hash(void* d, size_t dl, byte* out_hash) {
     wc_Sha512 s;
@@ -1164,20 +1254,18 @@ bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_sr
     };
 
     ID3D11Texture2D* pTexture = NULL;
-    // Создание текстуры
     g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
-    stbi_image_free(image_data); // Освобождаем память stb
+    stbi_image_free(image_data);
 
     if (!pTexture) return false;
 
-    // Создание SRV
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
         .Format = desc.Format,
         .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
         .Texture2D.MipLevels = desc.MipLevels
     };
     HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
-    pTexture->lpVtbl->Release(pTexture); // Освобождаем текстуру
+    pTexture->lpVtbl->Release(pTexture); 
 
     if (FAILED(hr)) return false;
 
@@ -1186,24 +1274,71 @@ bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_sr
     return true;
 }
 
-
 static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
+	static char l[32];
+	static char p[32];
 	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
-	igBegin("#l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igBegin("##l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
-	
+
+	ImVec2 aa = igCalcTextSize("Авторизация");
+	igSetWindowFontScale(2.0f);
+	igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
+	igText("Авторизация");
+	igSetWindowFontScale(1.0f);
+
+	igPushItemWidth(x*0.271);
+	// igSetCursorPosX(x*0.37);
+	igText("Логин:");
+	igInputText("##ll", &l, 32, ImGuiInputTextFlags_None);
+
+	igSpacing();
+
+	igText("Пароль:");
+	igInputText("##lp", &p, 32, ImGuiInputTextFlags_Password);
+	igPopItemWidth();
+	igSpacing(); igSpacing();
+
+	igSetCursorPos(ImVec2(x*0.46, y*0.86));
+	if(igButtonEx("Войти", ImVec2(x*0.08, y*0.03))){
+		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
+		
+	}
+
+	igSetCursorPosX(x*0.37);
+	igTextDisabled("*ваш аккаунт только для вас!");
+		
 	igEnd();
 }
 
 static void zc_register(short x, short y){ // db надо сюда
-	igBegin("#r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 
 	
 	
 	igEnd();
 }
 
+
+
+/*
+
+смена имени
+смена пароля
+смена аватарки
+просмотр текущей аватарки
+просмотр айди
+калькуляторный режим
+служба поддержки
+замена sni 
+поменять цвета интерфейса(файлом или кнопками)
+предустановленные темы
+отправлять ли в чат уведомление о заходе в войс чат
+синхронизировать данные
+
+
+*/
 static void zc_settings(short x, short y){ // db надо сюда
 	igBegin("#s", &gm.set, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
