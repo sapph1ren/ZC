@@ -1,29 +1,25 @@
 TARGET = Zipcord.exe
 CC = ccache gcc
 
-A_INC = /a/ 
-WOLFSSL_LIB = wolfssl
-DCIMGUI_LIB = dcig
-ZLIB_LIB = z
-# -flto
-CFLAGS = -std=c17 -O3 -s -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DNDEBUG -I.
+CFLAGS = -std=c17 -O3 -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -w -DNDEBUG -I.
 
 SRC = main.c sqlite3.c
-OBJS = $(SRC:.c=.o) museo.o 5.obj 4.obj
+OBJS = main.o sqlite3.o
+
+STATIC_OBJS = museo.o 5.obj 4.obj
 
 LIBS = -L./a/ -ldcig -lwolfssl -lopus -lz -ld3d11 -ld3dcompiler -ldxgi -ldxguid \
-       -luser32 -lgdi32 -lshell32 -lws2_32 -lmsimg32 -lsetupapi -limm32 -lm -lssp \
+       -luser32 -lgdi32 -lshell32 -lws2_32 -ladvapi32 -lmsimg32 -lsetupapi -limm32 -lm -lssp \
        -lcrypt32 -ldwmapi -lstdc++ -lwinmm -lole32
 
+LDFLAGS = -w -flto=8 -Wl,--gc-sections -Wl,--as-needed -static-libgcc -static-libstdc++ -mwindows
 
-LDFLAGS = -Wl,--gc-sections -Wl,--as-needed -static-libgcc -static-libstdc++ -mwindows # -flto
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS) $(LIBS)
+	$(CC) $(OBJS) $(STATIC_OBJS) -o $(TARGET) $(LDFLAGS) $(LIBS)
 	strip $(TARGET)
-#	upx --best --ultra-brute $(TARGET)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -33,6 +29,6 @@ run: $(TARGET)
 
 clean:
 	del /q $(TARGET)
-	del /q *.o
+	del /q $(OBJS)
 
 .PHONY: all run clean
