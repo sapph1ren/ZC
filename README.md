@@ -1,4 +1,8 @@
 # ZC
+
+<img width="1537" height="280" alt="zipcord2" src="https://github.com/user-attachments/assets/8b742f47-83e9-4bdd-9f22-dc05704c562b" />
+
+
 fast and private messenger in pure C with imgui
 
 ## `this version is Windows-only!`
