@@ -61,9 +61,12 @@
 #include <math.h>
 #include <tchar.h>
 #include <string.h>
+
 #define JSMN_IMPLEMENTATION
 #define JSMN_HEADER
 #include "jsmn.h"
+
+#include "zipcord2.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -73,6 +76,8 @@
 
 #define ITID ImTextureRef
 #define ImVec2(x, y) ((ImVec2){x, y})
+#define imu32(r, g, b, a) ((ImU32){r, g, b, a})
+#define ImVec4(x, y, a, b) ((ImVec4){x, y, a, b})
 
 static ID3D11Device*            g_pd3dDevice           = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = NULL;
@@ -245,7 +250,8 @@ typedef struct {
 typedef struct {
 	char name[32];       // имя
 	uint16_t uid;        // айди юзера
-	unsigned char* hash;      // хэш пароля
+	unsigned char* hash; // хэш пароля
+	float r;             // углы
 	ITID* ava_ptr;       // указатель на аватарку
 	bool ver;            // важный бумажный
 	char obn[16];        // дата и время синхронизации с сервером
@@ -1180,7 +1186,22 @@ static void zc_chat(short x, short y, chat* c){
     if (i_h > max_h) i_h = max_h;
     
     float p_h = i_h + y * 0.02f;
-    
+
+
+	// хедер
+	ImDrawList* idl = igGetWindowDrawList();
+	ImVec2 window_pos = igGetWindowPos();
+	ImVec2 p_min = { window_pos.x + y*0.005,  window_pos.y + y*0.005 };
+	ImVec2 p_max = { window_pos.x + x*0.06, window_pos.y + y*0.04 };
+	const ImU32 color_rect = 0xFF2CC2FC;
+	const ImU32 color_border = 0xFFFFFFFF;
+	ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 5.0f, ImDrawFlags_RoundCornersAll);
+	ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 2.0f);
+	
+
+
+
+	
     igSetCursorPos((ImVec2){x*0.1, y*0.96 - p_h});
     igDummy(ImVec2(0, 0));
     
@@ -1229,11 +1250,60 @@ static void zc_sw(short x, short y){
 	igEnd();
 }
 // Требуется глобальный или доступный ID3D11Device* g_pd3dDevice
-bool LoadTextureFromFile(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
+bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
 {
     int image_width = 0, image_height = 0;
     // Загрузка RGBA данных (4 канала)
     unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
+    if (!image_data) return false;
+
+    // Настройка дескриптора текстуры
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = image_width,
+        .Height = image_height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc.Count = 1,
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE
+    };
+
+    D3D11_SUBRESOURCE_DATA subResource = {
+        .pSysMem = image_data,
+        .SysMemPitch = image_width * 4
+    };
+
+    ID3D11Texture2D* pTexture = NULL;
+    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    stbi_image_free(image_data);
+
+    if (!pTexture) return false;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+        .Format = desc.Format,
+        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+        .Texture2D.MipLevels = desc.MipLevels
+    };
+    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
+    pTexture->lpVtbl->Release(pTexture); 
+
+    if (FAILED(hr)) return false;
+
+    *out_width = image_width;
+    *out_height = image_height;
+    return true;
+}
+bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
+{
+    // Проверка входных данных, чтобы избежать краша при пустом буфере
+    if (!data || len == 0) return false;
+
+    int image_width = 0, image_height = 0;
+    int image_channels = 0; // Переменная вместо NULL, куда библиотека запишет каналы
+    
+    // Передаем 6 параметров. Четвертым идет адрес &image_channels (НЕ NULL!), шестым — 4.
+    unsigned char* image_data = stbi_load_from_memory(data, (int)len, &image_width, &image_height, &image_channels, 4);
     if (!image_data) return false;
 
     // Настройка дескриптора текстуры
@@ -1312,12 +1382,55 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	igEnd();
 }
 
-static void zc_register(short x, short y){ // db надо сюда
-	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // db надо сюда
+	static char l[33];
+	static char p[33];
+	static char b[33];
+	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
+	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
+	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
+	igPushStyleColor(ImGuiCol_Border, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
+	igPushStyleVar(ImGuiStyleVar_FrameRounding, gm.r);
+	igBegin("##r", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
+	// ImVec2 aa = igCalcTextSize("Авторизация");
+	igSetWindowFontScale(2.0f);
+	// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
+	igText("Регистрация");
+	igSetWindowFontScale(1.0f);
+
+	igPushItemWidth(x*0.271);
+	// igSetCursorPosX(x*0.37);
+	igText("Ваше имя:");
+	igInputText("##rl", &l, IM_ARRAYSIZE(l), ImGuiInputTextFlags_None);
+
+	igSpacing(); igSpacing(); igSpacing();
+
+	igText("Ваш пароль:");
+	igInputText("##rp", &p, IM_ARRAYSIZE(p), ImGuiInputTextFlags_Password);
+
+	igSpacing(); igSpacing(); igSpacing();
+
+	igText("Ваш BDU ключ (32символа):");
+	igInputText("##rb", &b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
+	igPopItemWidth();
 	
-	
+	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
+	igSetCursorPosY(y*0.94);
+	// igSetCursorPos(ImVec2(x*0.01, -y*0.03));
+	if(igButtonEx("Войти", ImVec2(x*0.271, y*0.045))){
+		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
+		
+	}
+
+	igSetCursorPosX(x*0.37);
+	igTextDisabled("*ваш аккаунт только для вас!");
+		
 	igEnd();
+	igPopStyleColor();
+	igPopStyleColor();
+	igPopStyleVar();
 }
 
 
@@ -1340,7 +1453,7 @@ static void zc_register(short x, short y){ // db надо сюда
 
 */
 static void zc_settings(short x, short y){ // db надо сюда
-	igBegin("#s", &gm.set, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+	igBegin("##s", &gm.set, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
 	
 	
@@ -1490,16 +1603,30 @@ int main(int argc, char** argv) {
     ImGuiIO* io = igGetIO();
     io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 
+	
+	
     int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
     ImFontAtlas* atlas = igGetIO()->Fonts;
     const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
     ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
 
-    igStyleColorsDark(NULL);
+	ImGuiStyle* s = igGetStyle();
+	s->Colors[ImGuiCol_Button] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
+	s->Colors[ImGuiCol_ButtonHovered] = ImVec4(0.1f, 0.1f, 0.12f, 1.0f);
+	s->Colors[ImGuiCol_ButtonActive] = ImVec4(0.0f, 0.45f, 0.82f, 1.0f);
+
+	s->Colors[ImGuiCol_FrameBgActive] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
+	s->Colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
+	s->Colors[ImGuiCol_CheckMark] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
+	s->Colors[ImGuiCol_SliderGrab] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
+	s->Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
+
+	s->Colors[ImGuiCol_NavHighlight] = ImVec4(0.31f, 0.31f, 0.35f, 1.0f);
+	
     cImGui_ImplWin32_Init(hwnd);
     cImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    ImVec4 clear_color = { 0.45f, 0.55f, 0.60f, 1.00f };
+    ImVec4 clear_color = {0.21f, 0.22f, 0.24f, 1.0f};
 
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1527,7 +1654,6 @@ int main(int argc, char** argv) {
     user* usrs;
     chat* chats;
     uint16_t g_cid;
-	gm.login = true;
 	// unsigned char* a;
 	// uint16_t aa;
 	// if(C_lreestr(a, aa)){
@@ -1538,9 +1664,13 @@ int main(int argc, char** argv) {
 	// 		gm.con = false;
 	// 	}
 	// }
+	gm.reg = true;
+	gm.r = 12.0f;
 	ID3D11ShaderResourceView* aaa;
 	int w_a, h_a;
-	LoadTextureFromFile("zipcord2.png", &aaa, &w_a, &h_a);
+	V_lifm(zipcord2, 52228, &aaa, &w_a, &h_a);
+	// int w_a, h_a;
+	// V_liff("zipcord2.png", &aaa, &w_a, &h_a);
     bool done = false;
     while (!done) {
         if (IsIconic(hwnd)) {
@@ -1575,8 +1705,8 @@ int main(int argc, char** argv) {
 			zc_sw(x, y);
 	    }
 		if(gm.set){zc_settings(x, y);}
-		if(gm.reg){zc_register(x, y);}
-		if(gm.login){zc_login(x, y, aaa);}
+		if(gm.reg){zc_register(x, y, aaa);}
+		// if(gm.login){zc_login(x, y, aaa);}
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
