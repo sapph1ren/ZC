@@ -153,7 +153,7 @@ typedef struct {
 } user; 
 
 #define SERVER_PORT          "412"
-static char* SERVER_IP     = "1.1.1.1";
+static char* SERVER_IP     = "localhost";
 static char SERVER_SNI[32] = "ozon.ru";
 #define CHUNK_SIZE      16384
 #define AUDIO_RATE_HQ   48000
@@ -165,6 +165,7 @@ static char SERVER_SNI[32] = "ozon.ru";
 
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
 typedef enum { CB_TEXT, CB_NONE, CB_IMAGE, CB_FILE } CBType;
+typedef enum { C_BG, C_BUTTON, C_INPUT, C_TEXT,   } ColU;
 
 typedef enum {
     CONN_STATE_DISCONNECTED,
@@ -980,7 +981,6 @@ void S_d(zc_engine_t* eng, SocketType t) {
         S_spisok_off(eng, c->tx_pool_indexes[c->tx_tail]);
         c->tx_tail = (c->tx_tail + 1) % 64;
     }
-    LeaveCriticalSection(&c->tx_lock);
     
     c->next_retry_time = GetTickCount64() + c->backoff_ms;
     c->backoff_ms = min(c->backoff_ms * 2, 30000);
