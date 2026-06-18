@@ -71,6 +71,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include "icons.h"
+
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
 
@@ -579,26 +581,23 @@ static int IO_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx) {
 void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
     zc_connection_t* c = &eng->conns[t];
     if (t == SOCK_MEDIA) {
-        // data – путь к файлу (строка)
         const char* filepath = (const char*)data;
         FILE* f = fopen(filepath, "rb");
         if (!f) return;
 
         uint8_t in_buf[CHUNK_SIZE];
-        uint8_t out_buf[CHUNK_SIZE + 8]; // +8 для заголовков (сжатая длина, исходная длина)
+        uint8_t out_buf[CHUNK_SIZE + 8]; 
         size_t bytes_read;
 
         while ((bytes_read = fread(in_buf, 1, CHUNK_SIZE, f)) > 0) {
             uLongf compressed_len = compressBound((uLong)bytes_read);
             if (compressed_len > CHUNK_SIZE) {
-                // сжатый блок не влезает в буфер – отправить несжатым
                 ((uint32_t*)out_buf)[0] = htonl((uint32_t)bytes_read);
-                ((uint32_t*)out_buf)[1] = htonl(0xFFFFFFFF); // флаг "несжато"
+                ((uint32_t*)out_buf)[1] = htonl(0xFFFFFFFF); 
                 memcpy(out_buf + 8, in_buf, bytes_read);
                 compressed_len = (uLong)bytes_read;
             } else {
                 if (compress(out_buf + 8, &compressed_len, in_buf, (uLong)bytes_read) != Z_OK) {
-                    // ошибка сжатия – отправить как есть
                     ((uint32_t*)out_buf)[0] = htonl((uint32_t)bytes_read);
                     ((uint32_t*)out_buf)[1] = htonl(0xFFFFFFFF);
                     memcpy(out_buf + 8, in_buf, bytes_read);
@@ -609,7 +608,6 @@ void ZC_Send(zc_engine_t* eng, SocketType t, const void* data, uint32_t len) {
                 }
             }
 
-            // Поместить пакет в очередь отправки
             int p_idx = S_spisok(eng);
             if (p_idx != -1) {
                 uint32_t total_len = (uint32_t)compressed_len + 8;
@@ -691,20 +689,18 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                     c->text_orig_len = (c->expected_header_len == 8) ? ntohl(((uint32_t*)c->header_buf)[1]) : 0;
                     c->header_bytes_read = 0;
 
-                    // PONG-пакет (4 байта + флаг 0xFFFFFFFF)
                     if (c->target_payload_len == 4 && c->text_orig_len == 0xFFFFFFFF) {
                         uint32_t pong_val = 0;
                         wolfSSL_read(c->ssl, &pong_val, 4);
                         continue;
                     }
 
-                    // Пустой payload (только заголовок) – для SOCK_MEDIA больше не используется
                     if (c->target_payload_len == 0) {
                         continue;
                     }
 
                     if (c->target_payload_len > MAX_POOL_SIZE) {
-                        S_d(eng, t);   // дисконнект
+                        S_d(eng, t);  
                         return;
                     }
 
@@ -732,8 +728,6 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                 c->payload_bytes_read += n;
                 if (c->payload_bytes_read == c->target_payload_len) {
                     pkt->len = c->target_payload_len;
-
-                    // Аудио обрабатываем отдельно (Opus, кольцевой буфер)
                     if (t == SOCK_AUDIO) {
                         opus_int16 pcm[960];
                         int frame_samples = eng->is_legacy_cpu ? 320 : 960;
@@ -752,10 +746,8 @@ static void ZC_ProcessRead(zc_engine_t* eng, SocketType t) {
                         S_spisok_off(eng, c->rx_pool_idx);
                     }
                     else {
-                        // Для всех остальных каналов (TEXT, SYSTEM, MEDIA) – распаковка и вызов коллбэка
                         if (eng->on_message) {
                             if (c->text_orig_len == 0xFFFFFFFF) {
-                                // Несжатые данные
                                 eng->on_message(t, pkt->data, pkt->len, c->text_orig_len);
                             } else {
                                 uint8_t* o_buf = (uint8_t*)malloc(c->text_orig_len + 1);
@@ -812,7 +804,6 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
     zc_engine_t* eng = (zc_engine_t*)p;
 
     while (eng->running) {
-        // 1. Дренаж аудио-очереди из подсистемы записи звука
         LONG ar = InterlockedAdd(&eng->audio_tx_read, 0);
         LONG aw = InterlockedAdd(&eng->audio_tx_write, 0);
         while (ar != aw) {
@@ -821,7 +812,6 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             InterlockedExchange(&eng->audio_tx_read, ar);
         }
 
-        // 2. Логика автоматических пингов (раз в 30 секунд)
         uint64_t now = GetTickCount64();
         if (now - eng->last_app_ping_time > 30000) {
             for (int i = 0; i < SOCK_MAX; i++) {
@@ -846,12 +836,10 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             eng->last_app_ping_time = now;
         }
 
-        // 3. Подготовка масок для select()
         fd_set read_fds, write_fds;
         FD_ZERO(&read_fds); FD_ZERO(&write_fds);
         SOCKET max_s = 0; 
 
-        // Дисковая подсистема удалена
 		LONG current_disk_depth = 0;
 		bool disk_overloaded = false;
 
@@ -861,7 +849,6 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
             zc_connection_t* c = &eng->conns[i];
             if (c->state != CONN_STATE_DISCONNECTED) global_disconnected = false;
 
-            // Авто-подключение дескрипторов
             if (c->state == CONN_STATE_DISCONNECTED && now >= c->next_retry_time) {
                 struct addrinfo *res = NULL;
                 if (getaddrinfo(SERVER_IP, SERVER_PORT, NULL, &res) == 0 && res != NULL) {
@@ -891,7 +878,6 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
                 FD_SET(c->fd, &write_fds); 
             }
             else if (c->state == CONN_STATE_CONNECTED) {
-                // Контроль перегрузки диска оставляем (чтобы не забить ОЗУ), но от аудио больше не зависим
                 if (!(i == SOCK_MEDIA && disk_overloaded)) {
                     FD_SET(c->fd, &read_fds);
                 }
@@ -900,26 +886,20 @@ DWORD WINAPI ZC_Worker(LPVOID p) {
                 EnterCriticalSection(&c->tx_lock);
                 if (c->tx_head != c->tx_tail) has_tx = true;
                 LeaveCriticalSection(&c->tx_lock);
-
-                // ИЗМЕНЕНО: Убрано условие && !(i == SOCK_MEDIA && audio_pending).
-                // Теперь медиа-канал отправляет данные ВСЕГДА, когда есть что отправлять.
                 if (has_tx) {
                     FD_SET(c->fd, &write_fds);
                 }
             }
         }
 
-        // Выбор адаптивного таймаута сна
         struct timeval tv;
         if (global_disconnected) {
             tv.tv_sec = 0; tv.tv_usec = 250000;
         } else if (eng->conns[SOCK_AUDIO].state == CONN_STATE_CONNECTED || current_disk_depth > 0) {
-            tv.tv_sec = 0; tv.tv_usec = 10000; // Минимальный таймаут при активном звонке или дисковых операциях
+            tv.tv_sec = 0; tv.tv_usec = 1000;
         } else {
-            tv.tv_sec = 0; tv.tv_usec = 50000;
+            tv.tv_sec = 0; tv.tv_usec = 5000;
         }
-
-        // Мультиплексирование
         if (select((int)max_s + 1, &read_fds, &write_fds, NULL, &tv) > 0 && eng->running) {
             for (int i = 0; i < SOCK_MAX; i++) {
                 zc_connection_t* c = &eng->conns[i];
@@ -1249,15 +1229,15 @@ static void zc_sw(short x, short y){
 	
 	igEnd();
 }
-// Требуется глобальный или доступный ID3D11Device* g_pd3dDevice
+
 bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
 {
     int image_width = 0, image_height = 0;
-    // Загрузка RGBA данных (4 канала)
+
     unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
     if (!image_data) return false;
 
-    // Настройка дескриптора текстуры
+
     D3D11_TEXTURE2D_DESC desc = {
         .Width = image_width,
         .Height = image_height,
@@ -1296,17 +1276,15 @@ bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_w
 }
 bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
 {
-    // Проверка входных данных, чтобы избежать краша при пустом буфере
+
     if (!data || len == 0) return false;
 
     int image_width = 0, image_height = 0;
-    int image_channels = 0; // Переменная вместо NULL, куда библиотека запишет каналы
+    int image_channels = 0;
     
-    // Передаем 6 параметров. Четвертым идет адрес &image_channels (НЕ NULL!), шестым — 4.
     unsigned char* image_data = stbi_load_from_memory(data, (int)len, &image_width, &image_height, &image_channels, 4);
     if (!image_data) return false;
 
-    // Настройка дескриптора текстуры
     D3D11_TEXTURE2D_DESC desc = {
         .Width = image_width,
         .Height = image_height,
@@ -1388,7 +1366,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	static char b[33];
 	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
-	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
+	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){0.1f, 0.1f, 0.12f, 1.0f });
 	igPushStyleColor(ImGuiCol_Border, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
 	igPushStyleVar(ImGuiStyleVar_FrameRounding, gm.r);
 	igBegin("##r", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
@@ -1397,7 +1375,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	// ImVec2 aa = igCalcTextSize("Авторизация");
 	igSetWindowFontScale(2.0f);
 	// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
-	igText("Регистрация");
+	igText(ICON_MD_LOGIN);
 	igSetWindowFontScale(1.0f);
 
 	igPushItemWidth(x*0.271);
@@ -1603,13 +1581,31 @@ int main(int argc, char** argv) {
     ImGuiIO* io = igGetIO();
     io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 
-	
+	ImFontConfig icfg;
+	memset(&icfg, 0, sizeof(ImFontConfig));
+
+	// --- ЗАПОЛНЯЕМ ОБЯЗАТЕЛЬНЫЕ ДЕФОЛТЫ IMGUI ---
+	icfg.OversampleH = 2;            // Стандартное значение ImGui для сглаживания
+	icfg.OversampleV = 1;            // Стандартное значение ImGui
+	icfg.PixelSnapH = true;          // Ваша настройка
+	icfg.RasterizerDensity = 1.0f;   // КРИТИЧЕСКИ ВАЖНО: исправляет текущий ассерт!
+
+	// --- ВАШИ КАСТОМНЫЕ НАСТРОЙКИ СЛИЯНИЯ ---
+	icfg.MergeMode = true;           // Включаем слияние для иконок
+	icfg.GlyphMinAdvanceX = 24.0f;
+	icfg.GlyphOffset = ImVec2(0.0f, 0.0f);
+	icfg.FontDataOwnedByAtlas = false;
+	icfg.FontNo = 0;
 	
     int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
     ImFontAtlas* atlas = igGetIO()->Fonts;
     const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
     ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
-
+	int font_md3_size = (int)((intptr_t)_binary_md3_ttf_end - (intptr_t)_binary_md3_ttf_start);
+	if (font_md3_size != 0){
+		ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icfg, ImFontAtlas_GetGlyphRangesDefault(atlas));	
+	}
+	
 	ImGuiStyle* s = igGetStyle();
 	s->Colors[ImGuiCol_Button] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
 	s->Colors[ImGuiCol_ButtonHovered] = ImVec4(0.1f, 0.1f, 0.12f, 1.0f);
@@ -1626,7 +1622,7 @@ int main(int argc, char** argv) {
     cImGui_ImplWin32_Init(hwnd);
     cImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    ImVec4 clear_color = {0.21f, 0.22f, 0.24f, 1.0f};
+    ImVec4 clear_color = {0.1f, 0.1f, 0.12f, 1.0f};
 
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
