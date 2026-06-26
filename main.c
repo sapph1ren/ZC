@@ -10,6 +10,8 @@
 #include <shellapi.h>
 
 #define WOLFSSL_USER_SETTINGS
+#define WOLFSSL_LOW_MEMORY
+#define WOLFSSL_SMALL_STACK
 #define OPENSSL_EXTRA
 #define HAVE_AESGCM
 #define HAVE_CHACHA
@@ -31,6 +33,7 @@
 #define WOLFSSL_SHA512
 #define WOLFSSL_SHA384
 #define NO_PSK
+#define NO_SESSION_CACHE
 #include "wolfssl/options.h"
 #include "wolfssl/ssl.h"
 #include "wolfssl/wolfcrypt/ecc.h"
@@ -102,26 +105,29 @@ extern char* _sas(char from[], unsigned short s);
 extern char* _sis(char from[], unsigned short s);
 
 typedef struct {
-	sqlite3_stmt *save_me;
+    sqlite3_stmt *save_me;
     sqlite3_stmt *save_user;
     sqlite3_stmt *save_chat;
     sqlite3_stmt *save_msg;
+    sqlite3_stmt *save_user_avatar; // Новый
+    sqlite3_stmt *save_chat_avatar; // Новый
 
-	sqlite3_stmt *get_me;
+    sqlite3_stmt *get_me;
     sqlite3_stmt *get_user_by_uid;
     sqlite3_stmt *get_user_by_name;
     sqlite3_stmt *get_chat_by_cid;
     sqlite3_stmt *get_msgs_by_cid;
 
-	sqlite3_stmt *update_me;
+    sqlite3_stmt *update_me;
     sqlite3_stmt *update_user;
     sqlite3_stmt *update_chat;
     sqlite3_stmt *update_msg;
 
-	sqlite3_stmt *delete_msg_by_mid;
+    sqlite3_stmt *delete_msg_by_mid;
     sqlite3_stmt *delete_msgs_by_cid;
-	sqlite3_stmt* delete_user_by_uid;	
+    sqlite3_stmt *delete_user_by_uid;	
 } STMTS;
+
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -1438,127 +1444,136 @@ static void zc_settings(short x, short y){ // db надо сюда
 	igEnd();
 }
 
-int bd_init(sqlite3* db, STMTS* stmts){
-	int rc;
-	sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA synchronous = 0;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA ignore_check_constraints = 1;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA foreign_keys = OFF;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA optimize;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 400;", NULL, NULL, NULL);
-	// sqlite3_exec(db, "PRAGMA wal_checkpoint(PASSIVE);", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA mmap_size = 134217728;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
-	sqlite3_exec(db, "PRAGMA cache_size = 2000;", NULL, NULL, NULL);
+int BD_init(sqlite3* db, STMTS* stmts){
+    int rc;
+   
+    sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA synchronous = 0;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA optimize;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 400;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA mmap_size = 134217728;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA cache_size = 2000;", NULL, NULL, NULL);
+
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, OBN TEXT);", NULL, NULL, NULL);
+
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USER_AVATARS("
+					 "UID INTEGER UNIQUE REFERENCES USERS(UID) ON DELETE CASCADE, "
+					 "DATA BLOB"
+					 ");", NULL, NULL, NULL);
+
+	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHAT_AVATARS("
+					 "CID INTEGER UNIQUE REFERENCES CHATS(CID) ON DELETE CASCADE, "
+					 "DATA BLOB"
+					 ");", NULL, NULL, NULL);
 
 
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW BLOB, AVA BLOB, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, AVA BLOB, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, AVA BLOB, CID INTEGER, MMBRS TEXT, LID INTEGER, OBN TEXT);", NULL, NULL, NULL);
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS(MID INTEGER, UID INTEGER, CID INTEGER, TEXT BLOB, MEDIA BLOB, TYPE INTEGER, TIME TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS(MID INTEGER PRIMARY KEY, UID INTEGER, CID INTEGER, TEXT BLOB, MEDIA BLOB, TYPE INTEGER, TIME TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid ON MSGS(CID);", NULL, NULL, NULL);
 
-	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_msgs_cid ON MSGS(CID);", NULL, NULL, NULL);
-	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uid ON USERS(UID);", NULL, NULL, NULL);
-	sqlite3_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_cid ON CHATS(CID);", NULL, NULL, NULL);
-
-
-	  // Сохранение ME (с заменой при конфликте)
-    rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO ME (NAME, PASSW, AVA, UID, VER, OBN) "
-        "VALUES (?, ?, ?, ?, ?, ?);",
-        -1, &stmts->save_me, NULL);
+    // Сохранение ME
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Сохранение пользователя
-    rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO USERS (NAME, UID, AVA, VER, OBN) "
-        "VALUES (?, ?, ?, ?, ?);",
-        -1, &stmts->save_user, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts->save_user, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Сохранение чата
-    rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO CHATS (NAME, AVA, CID, MMBRS, LID, OBN) "
-        "VALUES (?, ?, ?, ?, ?, ?);",
-        -1, &stmts->save_chat, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Сохранение сообщения
-    rc = sqlite3_prepare_v2(db,  "INSERT OR REPLACE INTO MSGS (MID, UID, CID, TEXT, MEDIA, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, TEXT, MEDIA, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // Стейтменты для сохранения аватарок (используют серверные ID)
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USER_AVATARS (UID, DATA) VALUES (?, ?);", -1, &stmts->save_user_avatar, NULL); 
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHAT_AVATARS (CID, DATA) VALUES (?, ?);", -1, &stmts->save_chat_avatar, NULL); 
     if (rc != SQLITE_OK) return rc;
     
     // === ИЗВЛЕЧЕНИЕ ===
     
-    // Получить ME (текущего пользователя)
-    rc = sqlite3_prepare_v2(db,
-        "SELECT NAME, PASSW, AVA, UID, VER, OBN FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
+    // Получить ME с аватаркой
+    rc = sqlite3_prepare_v2(db, "SELECT m.NAME, m.PASSW, a.DATA AS AVA, m.UID, m.VER, m.OBN FROM ME m LEFT JOIN USER_AVATARS a ON m.UID = a.UID LIMIT 1;", -1, &stmts->get_me, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Получить пользователя по UID
-    rc = sqlite3_prepare_v2(db,
-        "SELECT NAME, AVA, VER, OBN FROM USERS WHERE UID = ?;",
-        -1, &stmts->get_user_by_uid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT u.NAME, a.DATA AS AVA, u.VER, u.OBN FROM USERS u LEFT JOIN USER_AVATARS a ON u.UID = a.UID WHERE u.UID = ?;", -1, &stmts->get_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Получить пользователя по имени
-    rc = sqlite3_prepare_v2(db,
-        "SELECT UID, NAME, AVA, VER, OBN FROM USERS WHERE NAME = ?;",
-        -1, &stmts->get_user_by_name, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT u.UID, u.NAME, a.DATA AS AVA, u.VER, u.OBN FROM USERS u LEFT JOIN USER_AVATARS a ON u.UID = a.UID WHERE u.NAME = ?;", -1, &stmts->get_user_by_name, NULL);
     if (rc != SQLITE_OK) return rc;
     
     // Получить чат по CID
-    rc = sqlite3_prepare_v2(db,
-        "SELECT NAME, AVA, MMBRS, LID, OBN FROM CHATS WHERE CID = ?;",
-        -1, &stmts->get_chat_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT c.NAME, a.DATA AS AVA, c.MMBRS, c.LID, c.OBN FROM CHATS c LEFT JOIN CHAT_AVATARS a ON c.CID = a.CID WHERE c.CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
     
-    // Получить сообщения чата (по CID, сортировка по времени)
-    rc = sqlite3_prepare_v2(db,
-        "SELECT MID, UID, TEXT, MEDIA, TYPE, TIME FROM MSGS "
-        "WHERE CID = ? ORDER BY TIME ASC;",
-        -1, &stmts->get_msgs_by_cid, NULL);
-    if (rc != SQLITE_OK) return rc;
-    // === ОБНОВЛЕНИЕ ===
-    
-    // Обновить OBN для ME
-    rc = sqlite3_prepare_v2(db,
-        "UPDATE ME SET OBN = ? WHERE UID = ?;",
-        -1, &stmts->update_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Обновить пользователя
-    rc = sqlite3_prepare_v2(db,
-        "UPDATE USERS SET NAME = ?, AVA = ?, VER = ?, OBN = ? WHERE UID = ?;",
-        -1, &stmts->update_user, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Обновить чат
-    rc = sqlite3_prepare_v2(db,
-        "UPDATE CHATS SET NAME = ?, AVA = ?, MMBRS = ?, OBN = ? WHERE CID = ?;",
-        -1, &stmts->update_chat, NULL);
+    // Получить сообщения чата
+    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, TEXT, MEDIA, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY TIME ASC;", -1, &stmts->get_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;",
-        -1, &stmts->delete_msgs_by_cid, NULL);
+    // === ОБНОВЛЕНИЕ ТЕКСТОВЫХ ДАННЫХ ===
+    
+    rc = sqlite3_prepare_v2(db, "UPDATE ME SET OBN = ? WHERE UID = ?;", -1, &stmts->update_me, NULL);
     if (rc != SQLITE_OK) return rc;
+    
+    rc = sqlite3_prepare_v2(db, "UPDATE USERS SET NAME = ?, VER = ?, OBN = ? WHERE UID = ?;", -1, &stmts->update_user, NULL);
+    if (rc != SQLITE_OK) return rc;
+    
+    rc = sqlite3_prepare_v2(db, "UPDATE CHATS SET NAME = ?, MMBRS = ?, OBN = ? WHERE CID = ?;", -1, &stmts->update_chat, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // Добавил недостающий апдейт сообщения по MID из структуры
+    rc = sqlite3_prepare_v2(db, "UPDATE MSGS SET TEXT = ?, MEDIA = ?, TYPE = ?, TIME = ? WHERE MID = ?;", -1, &stmts->update_msg, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // === УДАЛЕНИЕ ===
+
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts->delete_msg_by_mid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts->delete_msgs_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // При удалении юзера его аватарка сотрется автоматом из-за FOREIGN KEY ... ON DELETE CASCADE
+    rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts->delete_user_by_uid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    return SQLITE_OK;
 }
 
-void finalize_all_statements(STMTS* stmts) {
+void BD_off(STMTS* stmts) {
     if (stmts->save_me) sqlite3_finalize(stmts->save_me);
     if (stmts->save_user) sqlite3_finalize(stmts->save_user);
     if (stmts->save_chat) sqlite3_finalize(stmts->save_chat);
     if (stmts->save_msg) sqlite3_finalize(stmts->save_msg);
+    if (stmts->save_user_avatar) sqlite3_finalize(stmts->save_user_avatar); // Новый
+    if (stmts->save_chat_avatar) sqlite3_finalize(stmts->save_chat_avatar); // Новый
+
     if (stmts->get_me) sqlite3_finalize(stmts->get_me);
     if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
     if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
     if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
     if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
+
     if (stmts->update_me) sqlite3_finalize(stmts->update_me);
     if (stmts->update_user) sqlite3_finalize(stmts->update_user);
     if (stmts->update_chat) sqlite3_finalize(stmts->update_chat);
+    if (stmts->update_msg) sqlite3_finalize(stmts->update_msg);                  // Добавлен из структуры
+
+    if (stmts->delete_msg_by_mid) sqlite3_finalize(stmts->delete_msg_by_mid);    // Добавлен из структуры
     if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
+    if (stmts->delete_user_by_uid) sqlite3_finalize(stmts->delete_user_by_uid);  // Добавлен из структуры
 }
+
 
 
 
@@ -1580,22 +1595,13 @@ int main(int argc, char** argv) {
     igCreateContext(NULL);
     ImGuiIO* io = igGetIO();
     io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    static const ImWchar mdi_ranges[] = { ICON_MIN_MD, ICON_MAX_MD, 0 };  
 
-	ImFontConfig icfg;
-	memset(&icfg, 0, sizeof(ImFontConfig));
-
-	// --- ЗАПОЛНЯЕМ ОБЯЗАТЕЛЬНЫЕ ДЕФОЛТЫ IMGUI ---
-	icfg.OversampleH = 2;            // Стандартное значение ImGui для сглаживания
-	icfg.OversampleV = 1;            // Стандартное значение ImGui
-	icfg.PixelSnapH = true;          // Ваша настройка
-	icfg.RasterizerDensity = 1.0f;   // КРИТИЧЕСКИ ВАЖНО: исправляет текущий ассерт!
-
-	// --- ВАШИ КАСТОМНЫЕ НАСТРОЙКИ СЛИЯНИЯ ---
-	icfg.MergeMode = true;           // Включаем слияние для иконок
-	icfg.GlyphMinAdvanceX = 24.0f;
-	icfg.GlyphOffset = ImVec2(0.0f, 0.0f);
-	icfg.FontDataOwnedByAtlas = false;
-	icfg.FontNo = 0;
+	ImFontConfig icons_config ={0};
+    icons_config.MergeMode = true;
+    icons_config.PixelSnapH = true;
+    icons_config.GlyphMinAdvanceX = 24.0f;
+    icons_config.GlyphOffset = ImVec2(-1.0f, -1.0f);
 	
     int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
     ImFontAtlas* atlas = igGetIO()->Fonts;
@@ -1603,7 +1609,7 @@ int main(int argc, char** argv) {
     ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
 	int font_md3_size = (int)((intptr_t)_binary_md3_ttf_end - (intptr_t)_binary_md3_ttf_start);
 	if (font_md3_size != 0){
-		ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icfg, ImFontAtlas_GetGlyphRangesDefault(atlas));	
+		ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icons_config, mdi_ranges);	
 	}
 	
 	ImGuiStyle* s = igGetStyle();
