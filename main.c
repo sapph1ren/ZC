@@ -137,7 +137,10 @@ typedef struct {
 	char time[16];       // время с датой
 	union{               // тут может быть только одна из трех строк, шоб меньше памяти жрало
 		char text[4096]; // текст до 4кб 
-		ITID* img_ptr;   // указатель на фото
+		struct{
+			ITID* img_ptr;   // указатель на фото
+			double w, h;
+		} image;
 		char* path;      // путь до документа на отправку/просмотр
 	} ctnt;
 	uint8_t type;        // тип сообщения, чтобы правильно и быстро извлекать содержимое 
@@ -1224,12 +1227,13 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count) {
 
         // Вычисляем высоту сообщения в зависимости от его типа (0 - текст, 1 - картинка, 2 - док)
         double itemH = 0.0f;
+		double w;
         if (msgi->type == 1) { 
-            int w = x * 0.3f - 10;
-            int h = w * 9 / 16; // Заглушка, подставьте реальные пропорции если есть
-            itemH = hSize.y + h + padding * 2 + messageSpacing;
+            w = msgi->ctnt.image.w > hSize.x ? msgi->ctnt.image.w + 20 : hSize.x + 20;
+            itemH = hSize.y + msgi->ctnt.image.h + 20 + hSize.y + padding * 2 + messageSpacing;
         } else if (msgi->type == 2) { 
-            itemH = hSize.y + padding * 2 + messageSpacing;
+            itemH = hSize.y + padding * 2 + y*0.06 + messageSpacing;
+			w = hSize.x + padding*2 + 20;
         } else { 
             ImVec2 textSize = igCalcTextSizeEx(msgi->ctnt.text, NULL, false, x * 0.54f);
             itemH = hSize.y + textSize.y + padding * 2 + messageSpacing;
@@ -1238,7 +1242,7 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count) {
         ImVec2 screenPos = igGetCursorScreenPos();
 
         // Отрисовка круглой аватарки (если img_ptr == NULL, будет прозрачный квадрат)
-        ITID ava_tex = *msgi->ctnt.img_ptr; 
+        ITID ava_tex = *msgi->ctnt.image.img_ptr; 
         ImDrawList_AddImageRounded(idl, (ITID)ava_tex, screenPos, ImVec2(screenPos.x + avatarSize, screenPos.y + avatarSize), ImVec2(0,0), ImVec2(1,1), 0xFFFFFFFF, avatarRounding, ImDrawFlags_None);
 
         igSetCursorPos(ImVec2(cursorStartPos.x, cursorStartPos.y));
@@ -1251,20 +1255,10 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count) {
 		// регистрация (весь юзер), логин (юзер), создание чата(хедер, сообщения), сообщения, войс
 		
         // Вычисление ширины фона сообщения
-        float boxWidth = 0.0f;
-        if (msgi->type == 1) {
-            int w = x * 0.3f - 10;
-            boxWidth = (hSize.x > w ? hSize.x : w) + padding * 2;
-        } else {
-            const char* txt = msgi->type == 0 ? msgi->ctnt.text : msgi->ctnt.path;
-            ImVec2 tSize = igCalcTextSizeEx(txt, NULL, false, x * 0.54f);
-            boxWidth = (hSize.x > tSize.x ? hSize.x : tSize.x) + padding * 2;
-        }
 
         ImVec2 msgPos = igGetCursorScreenPos();
-        ImVec2 msgEnd = ImVec2(msgPos.x + boxWidth, msgPos.y + itemH - messageSpacing);
+        ImVec2 msgEnd = ImVec2(msgPos.x + w, msgPos.y + itemH - messageSpacing);
 
-        // Отрисовка фона сообщения (цвет COLOR_MSG_BG)
         ImDrawList_AddRectFilledEx(idl, msgPos, msgEnd, 0xFF353535, 12.0f, ImDrawFlags_RoundCornersAll); 
 
         // Имя и время отправителя
@@ -1276,10 +1270,11 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count) {
         // Само содержимое (Текст, Картинка или Файл)
         igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + hSize.y + padding));
         if (msgi->type == 1) {
-            ImTextureRef img_tex = *msgi->ctnt.img_ptr;
-            int w = x * 0.3f - 10;
-            int h = w * 9 / 16;
-            igImage(img_tex, ImVec2(w, h));
+            ImTextureRef img_tex = *msgi->ctnt.image.img_ptr;
+			double oo = msgi->ctnt.image.w / x*0.4;
+            int ww = msgi->ctnt.image.w > x*0.4 ? x*0.4 : msgi->ctnt.image.w;
+            int hh = msgi->ctnt.image.w > x*0.4 ? msgi->ctnt.image.h*oo : msgi->ctnt.image.h;
+            igImage(img_tex, ImVec2(ww, hh));
         } else if (msgi->type == 2) {
             igText("Файл: %s", msgi->ctnt.path);
         } else {
@@ -1778,7 +1773,7 @@ int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_cou
                 
                 // m->ctnt.img_ptr = engine_load_texture(full_path);
             } else {
-                m->ctnt.img_ptr = NULL;
+                m->ctnt.image.img_ptr = NULL;
             }
         } 
         else if (m->type == 2) {
