@@ -127,7 +127,7 @@ typedef struct {
     sqlite3_stmt *delete_msgs_by_cid;
     sqlite3_stmt *delete_user_by_uid;	
 } STMTS;
-
+STMTS* stmts;
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -159,6 +159,16 @@ typedef struct {
 	bool ver;            // важный бумажный
 	ITID* ava_ptr;       //	указатель на аватарку
 } user; 
+
+typedef struct {
+    msg items[300];
+    size_t count;
+    int64_t active_cid;
+    int64_t min_mid;     // Минимальный ID в текущем окне (самое старое)
+    int64_t max_mid;     // Максимальный ID в текущем окне (самое свежее)
+    bool has_more_older; // Есть ли еще старые сообщения выше
+    bool has_more_newer; // Есть ли еще новые сообщения ниже
+} msg_window;
 
 #define SERVER_PORT          "412"
 static char* SERVER_IP     = "localhost";
@@ -1149,9 +1159,10 @@ void ZC_Reconnect(zc_engine_t* eng, int channel) {
 }
 
 static bool f = false;
-static void zc_chat(short x, short y, chat* c){
-    igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
-    igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
+
+static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count) {
+    igSetNextWindowSize(ImVec2(x*0.65, y), ImGuiCond_None);
+    igSetNextWindowPos(ImVec2(x*0.35, 0), ImGuiCond_None);
     igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
     
     ImGuiStyle* style = igGetStyle();
@@ -1173,33 +1184,128 @@ static void zc_chat(short x, short y, chat* c){
     
     float p_h = i_h + y * 0.02f;
 
-
-	// хедер
-	ImDrawList* idl = igGetWindowDrawList();
-	ImVec2 window_pos = igGetWindowPos();
-	ImVec2 p_min = { window_pos.x + y*0.005,  window_pos.y + y*0.005 };
-	ImVec2 p_max = { window_pos.x + x*0.06, window_pos.y + y*0.04 };
-	const ImU32 color_rect = 0xFF2CC2FC;
-	const ImU32 color_border = 0xFFFFFFFF;
-	ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 5.0f, ImDrawFlags_RoundCornersAll);
-	ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 2.0f);
+    // Хедер
+    ImDrawList* idl = igGetWindowDrawList();
+    ImVec2 window_pos = igGetWindowPos();
+    ImVec2 p_min = ImVec2(window_pos.x + x*0.0085, window_pos.y + y*0.005);
+    ImVec2 p_max = ImVec2(window_pos.x + x*0.64, window_pos.y + y*0.055);
+    const ImU32 color_rect = igColorConvertFloat4ToU32(ImVec4(0.18f, 0.188f, 0.2f, 1.0f));
+    const ImU32 color_border = 0xFFFFFFFF;
+    ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 0.5f, ImDrawFlags_RoundCornersAll);
+    ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 0.5f);
 	
+    // ============================================
+    // ИСТОРИЯ СООБЩЕНИЙ (портировано из UI.cpp)
+    // ============================================
+    float header_offset = y * 0.05f;
+    float chat_area_h = (y * 0.96f - p_h) - header_offset - (y * 0.01f);
+
+    igSetCursorPos(ImVec2(x * 0.02f, header_offset));
+    igBeginChild("ChatScroll", ImVec2(x * 0.64f, chat_area_h), ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+    float avatarSize = x * 0.018f;
+    float avatarRounding = avatarSize * 0.3f;
+    const float padding = 8.0f;
+    const float messageSpacing = 3.0f;
+
+    for (int i = 0; i < msg_count; ++i) {
+        msg* msgi = &msgs[i];
+        
+        char id_str[32];
+        snprintf(id_str, sizeof(id_str), "msg_%d", msgi->mid);
+        igPushID(id_str);
+
+        ImVec2 cursorStartPos = igGetCursorPos();
+
+        // Сборка заголовка (Имя / время)
+        char header_str[128];
+        snprintf(header_str, sizeof(header_str), "UID:%d  %s", msgi->uid, msgi->time);
+        ImVec2 hSize = igCalcTextSizeEx(header_str, NULL, false, x * 0.54f);
+
+        // Вычисляем высоту сообщения в зависимости от его типа (0 - текст, 1 - картинка, 2 - док)
+        double itemH = 0.0f;
+        if (msgi->type == 1) { 
+            int w = x * 0.3f - 10;
+            int h = w * 9 / 16; // Заглушка, подставьте реальные пропорции если есть
+            itemH = hSize.y + h + padding * 2 + messageSpacing;
+        } else if (msgi->type == 2) { 
+            itemH = hSize.y + padding * 2 + messageSpacing;
+        } else { 
+            ImVec2 textSize = igCalcTextSizeEx(msgi->ctnt.text, NULL, false, x * 0.54f);
+            itemH = hSize.y + textSize.y + padding * 2 + messageSpacing;
+        }
+
+        ImVec2 screenPos = igGetCursorScreenPos();
+
+        // Отрисовка круглой аватарки (если img_ptr == NULL, будет прозрачный квадрат)
+        ITID ava_tex = *msgi->ctnt.img_ptr; 
+        ImDrawList_AddImageRounded(idl, (ITID)ava_tex, screenPos, ImVec2(screenPos.x + avatarSize, screenPos.y + avatarSize), ImVec2(0,0), ImVec2(1,1), 0xFFFFFFFF, avatarRounding, ImDrawFlags_None);
+
+        igSetCursorPos(ImVec2(cursorStartPos.x, cursorStartPos.y));
+        if (igInvisibleButton("##avatar_btn", ImVec2(avatarSize, avatarSize), ImGuiButtonFlags_None)) {
+            // Клик по аватарке (открытие профиля)
+        }
+
+        igSetCursorPos(ImVec2(cursorStartPos.x + avatarSize + padding, cursorStartPos.y));
+
+		// регистрация (весь юзер), логин (юзер), создание чата(хедер, сообщения), сообщения, войс
+		
+        // Вычисление ширины фона сообщения
+        float boxWidth = 0.0f;
+        if (msgi->type == 1) {
+            int w = x * 0.3f - 10;
+            boxWidth = (hSize.x > w ? hSize.x : w) + padding * 2;
+        } else {
+            const char* txt = msgi->type == 0 ? msgi->ctnt.text : msgi->ctnt.path;
+            ImVec2 tSize = igCalcTextSizeEx(txt, NULL, false, x * 0.54f);
+            boxWidth = (hSize.x > tSize.x ? hSize.x : tSize.x) + padding * 2;
+        }
+
+        ImVec2 msgPos = igGetCursorScreenPos();
+        ImVec2 msgEnd = ImVec2(msgPos.x + boxWidth, msgPos.y + itemH - messageSpacing);
+
+        // Отрисовка фона сообщения (цвет COLOR_MSG_BG)
+        ImDrawList_AddRectFilledEx(idl, msgPos, msgEnd, 0xFF353535, 12.0f, ImDrawFlags_RoundCornersAll); 
+
+        // Имя и время отправителя
+        igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + padding));
+        igSetWindowFontScale(0.8f);
+        igTextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), header_str);
+        igSetWindowFontScale(1.0f);
+
+        // Само содержимое (Текст, Картинка или Файл)
+        igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + hSize.y + padding));
+        if (msgi->type == 1) {
+            ImTextureRef img_tex = *msgi->ctnt.img_ptr;
+            int w = x * 0.3f - 10;
+            int h = w * 9 / 16;
+            igImage(img_tex, ImVec2(w, h));
+        } else if (msgi->type == 2) {
+            igText("Файл: %s", msgi->ctnt.path);
+        } else {
+            igTextWrapped("%s", msgi->ctnt.text);
+        }
+
+        igSetCursorPos(ImVec2(cursorStartPos.x, cursorStartPos.y + itemH + y * 0.01f));
+        igPopID();
+    }
+
+    igEndChild();
 
 
-
-	
-    igSetCursorPos((ImVec2){x*0.1, y*0.96 - p_h});
+    igSetCursorPos(ImVec2(x*0.1, y - p_h));
     igDummy(ImVec2(0, 0));
-    
-    igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, (ImVec2){x*0.07, y*0.01});
-    igPushStyleColorImVec4(ImGuiCol_ChildBg, (ImVec4){0.125f, 0.133f, 0.145f, 1.0f});
-    igSetNextWindowPos((ImVec2){x*0.45, y*0.96 - p_h}, NULL);
-    igSetNextWindowSize(ImVec2(x*0.45, p_h), NULL);
+    igPushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f);
+    igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, ImVec2(x*0.07, y*0.01));
+    igPushStyleColorImVec4(ImGuiCol_ChildBg, ImVec4(0.125f, 0.133f, 0.145f, 1.0f));
+    igPushStyleColorImVec4(ImGuiCol_FrameBg, ImVec4(0.125f, 0.133f, 0.145f, 1.0f));
+    igSetNextWindowPos(ImVec2(x*0.45, y*0.96 - p_h), ImGuiCond_None);
+    igSetNextWindowSize(ImVec2(x*0.45, p_h), ImGuiCond_None);
     
     if(igBeginChild("##p", ImVec2(x*0.45, p_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar)){
         igSetNextItemWidth(x*0.4);
         float _y = (p_h - i_h) * 0.5f;
-        igSetCursorPos((ImVec2){20, _y});
+        igSetCursorPos(ImVec2(20, _y));
 		if(f){igSetKeyboardFocusHere(); f = false;}
         if (igInputTextMultilineEx("##i", c->buf, 4096, ImVec2(i_w, i_h), ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_NoHorizontalScroll | ImGuiInputTextFlags_WordWrap, NULL, NULL)){
             c->buf[0] = '\0';
@@ -1208,9 +1314,74 @@ static void zc_chat(short x, short y, chat* c){
     }
     igEndChild();
     igPopStyleVarEx(1);
+	igPopStyleVar();
+    igPopStyleColor();
     igPopStyleColor();
     igEnd();
 }
+
+// static void zc_chat(short x, short y, chat* c){
+//     igSetNextWindowSize((ImVec2){x*0.65, y}, NULL);
+//     igSetNextWindowPos((ImVec2){x*0.35, 0}, NULL);
+//     igBegin("c", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    
+//     ImGuiStyle* style = igGetStyle();
+//     float l_h = igGetTextLineHeight();
+//     float i_w = x * 0.386f;    
+//     ImVec2 t_s = igCalcTextSizeEx(c->buf, NULL, false, i_w - (style->FramePadding.x * 2.0f) - style->ScrollbarSize); 
+ 
+//     int len = strlen(c->buf);
+//     if (len > 0 && c->buf[len - 1] == '\n') {
+//         t_s.y += l_h;
+//     }
+    
+//     float min_h = l_h + (style->FramePadding.y * 2.0f);        // 1 строка
+//     float max_h = (l_h * 8) + (style->FramePadding.y * 2.0f);  // 8 строк
+    
+//     float i_h = t_s.y + (style->FramePadding.y * 2.0f);
+//     if (i_h < min_h) i_h = min_h;
+//     if (i_h > max_h) i_h = max_h;
+    
+//     float p_h = i_h + y * 0.02f;
+
+
+// 	// хедер
+// 	ImDrawList* idl = igGetWindowDrawList();
+// 	ImVec2 window_pos = igGetWindowPos();
+// 	ImVec2 p_min = { window_pos.x + y*0.005,  window_pos.y + y*0.005 };
+// 	ImVec2 p_max = { window_pos.x + x*0.06, window_pos.y + y*0.04 };
+// 	const ImU32 color_rect = 0xFF2CC2FC;
+// 	const ImU32 color_border = 0xFFFFFFFF;
+// 	ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 5.0f, ImDrawFlags_RoundCornersAll);
+// 	ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 2.0f);
+	
+
+
+
+	
+//     igSetCursorPos((ImVec2){x*0.1, y*0.96 - p_h});
+//     igDummy(ImVec2(0, 0));
+    
+//     igPushStyleVarImVec2(ImGuiStyleVar_WindowPadding, (ImVec2){x*0.07, y*0.01});
+//     igPushStyleColorImVec4(ImGuiCol_ChildBg, (ImVec4){0.125f, 0.133f, 0.145f, 1.0f});
+//     igSetNextWindowPos((ImVec2){x*0.45, y*0.96 - p_h}, NULL);
+//     igSetNextWindowSize(ImVec2(x*0.45, p_h), NULL);
+    
+//     if(igBeginChild("##p", ImVec2(x*0.45, p_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar)){
+//         igSetNextItemWidth(x*0.4);
+//         float _y = (p_h - i_h) * 0.5f;
+//         igSetCursorPos((ImVec2){20, _y});
+// 		if(f){igSetKeyboardFocusHere(); f = false;}
+//         if (igInputTextMultilineEx("##i", c->buf, 4096, ImVec2(i_w, i_h), ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_NoHorizontalScroll | ImGuiInputTextFlags_WordWrap, NULL, NULL)){
+//             c->buf[0] = '\0';
+// 			f = true;
+//         }
+//     }
+//     igEndChild();
+//     igPopStyleVarEx(1);
+//     igPopStyleColor();
+//     igEnd();
+// }
 
 
 
@@ -1444,106 +1615,67 @@ static void zc_settings(short x, short y){ // db надо сюда
 	igEnd();
 }
 
-int BD_init(sqlite3* db, STMTS* stmts){
+int BD_init(sqlite3* db, STMTS* stmts) {
     int rc;
-   
+
+    // Pragma-настройки
     sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA synchronous = 0;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA synchronous = 1;", NULL, NULL, NULL); // NORMAL режим безопаснее
     sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA optimize;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 400;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA mmap_size = 134217728;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA cache_size = 2000;", NULL, NULL, NULL);
 
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, OBN TEXT);", NULL, NULL, NULL);
+    // Таблицы без BLOB — храним пути к файлам
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER PRIMARY KEY, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER PRIMARY KEY, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER PRIMARY KEY, MMBRS TEXT, LID INTEGER, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
 
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USER_AVATARS("
-					 "UID INTEGER UNIQUE REFERENCES USERS(UID) ON DELETE CASCADE, "
-					 "DATA BLOB"
-					 ");", NULL, NULL, NULL);
+    // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
+                     "MID INTEGER PRIMARY KEY, "
+                     "UID INTEGER, "
+                     "CID INTEGER, "
+                     "CONTENT TEXT, "   // Текст сообщения ИЛИ путь к медиафайлу в blob/
+                     "TYPE INTEGER, "  // 0 - текст, 1 - фото, 2 - файл/док
+                     "TIME TEXT"
+                     ");", NULL, NULL, NULL);
 
-	sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHAT_AVATARS("
-					 "CID INTEGER UNIQUE REFERENCES CHATS(CID) ON DELETE CASCADE, "
-					 "DATA BLOB"
-					 ");", NULL, NULL, NULL);
+    // Составной индекс для эффективного скролла и сортировки
+    sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid_mid ON MSGS(CID, MID);", NULL, NULL, NULL);
 
-
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS(MID INTEGER PRIMARY KEY, UID INTEGER, CID INTEGER, TEXT BLOB, MEDIA BLOB, TYPE INTEGER, TIME TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid ON MSGS(CID);", NULL, NULL, NULL);
-
-    // Сохранение ME
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Сохранение пользователя
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts->save_user, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Сохранение чата
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Сохранение сообщения
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, TEXT, MEDIA, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    // === СОХРАНЕНИЕ ===
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    // Стейтменты для сохранения аватарок (используют серверные ID)
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USER_AVATARS (UID, DATA) VALUES (?, ?);", -1, &stmts->save_user_avatar, NULL); 
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_user, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHAT_AVATARS (CID, DATA) VALUES (?, ?);", -1, &stmts->save_chat_avatar, NULL); 
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
     if (rc != SQLITE_OK) return rc;
-    
+
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    if (rc != SQLITE_OK) return rc;
+
     // === ИЗВЛЕЧЕНИЕ ===
-    
-    // Получить ME с аватаркой
-    rc = sqlite3_prepare_v2(db, "SELECT m.NAME, m.PASSW, a.DATA AS AVA, m.UID, m.VER, m.OBN FROM ME m LEFT JOIN USER_AVATARS a ON m.UID = a.UID LIMIT 1;", -1, &stmts->get_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Получить пользователя по UID
-    rc = sqlite3_prepare_v2(db, "SELECT u.NAME, a.DATA AS AVA, u.VER, u.OBN FROM USERS u LEFT JOIN USER_AVATARS a ON u.UID = a.UID WHERE u.UID = ?;", -1, &stmts->get_user_by_uid, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Получить пользователя по имени
-    rc = sqlite3_prepare_v2(db, "SELECT u.UID, u.NAME, a.DATA AS AVA, u.VER, u.OBN FROM USERS u LEFT JOIN USER_AVATARS a ON u.UID = a.UID WHERE u.NAME = ?;", -1, &stmts->get_user_by_name, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Получить чат по CID
-    rc = sqlite3_prepare_v2(db, "SELECT c.NAME, a.DATA AS AVA, c.MMBRS, c.LID, c.OBN FROM CHATS c LEFT JOIN CHAT_AVATARS a ON c.CID = a.CID WHERE c.CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    // Получить сообщения чата
-    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, TEXT, MEDIA, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY TIME ASC;", -1, &stmts->get_msgs_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA_PATH FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    // === ОБНОВЛЕНИЕ ТЕКСТОВЫХ ДАННЫХ ===
-    
-    rc = sqlite3_prepare_v2(db, "UPDATE ME SET OBN = ? WHERE UID = ?;", -1, &stmts->update_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    rc = sqlite3_prepare_v2(db, "UPDATE USERS SET NAME = ?, VER = ?, OBN = ? WHERE UID = ?;", -1, &stmts->update_user, NULL);
-    if (rc != SQLITE_OK) return rc;
-    
-    rc = sqlite3_prepare_v2(db, "UPDATE CHATS SET NAME = ?, MMBRS = ?, OBN = ? WHERE CID = ?;", -1, &stmts->update_chat, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, OBN, AVA_PATH FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    // Добавил недостающий апдейт сообщения по MID из структуры
-    rc = sqlite3_prepare_v2(db, "UPDATE MSGS SET TEXT = ?, MEDIA = ?, TYPE = ?, TIME = ? WHERE MID = ?;", -1, &stmts->update_msg, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN, AVA_PATH FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
     // === УДАЛЕНИЕ ===
-
     rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts->delete_msg_by_mid, NULL);
     if (rc != SQLITE_OK) return rc;
 
     rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts->delete_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    // При удалении юзера его аватарка сотрется автоматом из-за FOREIGN KEY ... ON DELETE CASCADE
     rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts->delete_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
 
@@ -1574,9 +1706,118 @@ void BD_off(STMTS* stmts) {
     if (stmts->delete_user_by_uid) sqlite3_finalize(stmts->delete_user_by_uid);  // Добавлен из структуры
 }
 
+void build_full_path(char* out_buf, size_t buf_size, const char* base_dir, const char* relative_path) {
+    snprintf(out_buf, buf_size, "%s/%s", base_dir, relative_path);
+}
 
+// Сохранить сообщение (текст или путь к файлу)
+int bd_save_msg(sqlite3_stmt* stmt, const msg* m, const char* relative_file_path) {
+    sqlite3_bind_int(stmt, 1, m->mid);
+    sqlite3_bind_int(stmt, 2, m->uid);
+    sqlite3_bind_int(stmt, 3, m->cid);
 
+    // Записываем контент в зависимости от типа
+    if (m->type == 0) {
+        // Обычный текст
+        sqlite3_bind_text(stmt, 4, m->ctnt.text, -1, SQLITE_STATIC);
+    } else {
+        // Фото или файл: пишем относительный путь к файлу в blob/
+        const char* path_to_save = (m->type == 2 && m->ctnt.path) ? m->ctnt.path : relative_file_path;
+        sqlite3_bind_text(stmt, 4, path_to_save ? path_to_save : "", -1, SQLITE_STATIC);
+    }
 
+    sqlite3_bind_int(stmt, 5, m->type);
+    sqlite3_bind_text(stmt, 6, m->time, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+// Сохранить чат (включая путь к аватарке)
+int bd_save_chat(sqlite3_stmt* stmt, const chat* c, const char* ava_path) {
+    sqlite3_bind_text(stmt, 1, c->name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, c->cid);
+    sqlite3_bind_text(stmt, 3, "", -1, SQLITE_STATIC); // MMBRS
+    sqlite3_bind_int(stmt, 4, c->lmid);
+    sqlite3_bind_text(stmt, 5, "", -1, SQLITE_STATIC); // OBN
+    sqlite3_bind_text(stmt, 6, ava_path ? ava_path : "", -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_count, size_t* out_count, const char* base_blob_dir) {
+    sqlite3_bind_int(stmt, 1, cid);
+
+    size_t count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
+        msg* m = &out_array[count];
+
+        m->mid = (uint32_t)sqlite3_column_int(stmt, 0);
+        m->uid = (uint16_t)sqlite3_column_int(stmt, 1);
+        m->cid = cid;
+        m->dost = true;
+        m->type = (uint8_t)sqlite3_column_int(stmt, 3);
+
+        const unsigned char* content = sqlite3_column_text(stmt, 2);
+
+        if (m->type == 0) {
+            // Текст
+            if (content) snprintf(m->ctnt.text, sizeof(m->ctnt.text), "%s", content);
+            else m->ctnt.text[0] = '\0';
+        } 
+        else if (m->type == 1) {
+            // Картинка: в content лежит относительный путь "photos/img1.jpg"
+            if (content) {
+                char full_path[512];
+                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
+                
+                // m->ctnt.img_ptr = engine_load_texture(full_path);
+            } else {
+                m->ctnt.img_ptr = NULL;
+            }
+        } 
+        else if (m->type == 2) {
+            // Документ/Файл: выделяем путь
+            if (content) {
+                char full_path[512];
+                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
+                m->ctnt.path = strdup(full_path);
+            } else {
+                m->ctnt.path = NULL;
+            }
+        }
+
+        const unsigned char* time_str = sqlite3_column_text(stmt, 4);
+        if (time_str) snprintf(m->time, sizeof(m->time), "%s", time_str);
+
+        count++;
+    }
+
+    *out_count = count;
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return 0;
+}
+
+int bd_delete_msg_with_file(sqlite3* db, STMTS* stmts, uint32_t mid, const char* base_blob_dir) {
+    // 1. Сначала узнаем путь к файлу (если сообщение было медиа/файлом)
+    // SQL: "SELECT CONTENT, TYPE FROM MSGS WHERE MID = ?;"
+    // Если TYPE == 1 или 2, берём relative_path и с помощью remove(full_path) удаляем файл с диска.
+
+    // 2. Удаляем запись из БД
+    sqlite3_bind_int(stmts->delete_msg_by_mid, 1, mid);
+    int rc = sqlite3_step(stmts->delete_msg_by_mid);
+    
+    sqlite3_reset(stmts->delete_msg_by_mid);
+    sqlite3_clear_bindings(stmts->delete_msg_by_mid);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
 
 int main(int argc, char** argv) {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
@@ -1607,16 +1848,16 @@ int main(int argc, char** argv) {
     ImFontAtlas* atlas = igGetIO()->Fonts;
     const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
     ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
-	int font_md3_size = (int)((intptr_t)_binary_md3_ttf_end - (intptr_t)_binary_md3_ttf_start);
-	if (font_md3_size != 0){
-		ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icons_config, mdi_ranges);	
-	}
+	// int font_md3_size = (int)((intptr_t)_binary_md3_ttf_end - (intptr_t)_binary_md3_ttf_start);
+	// if (font_md3_size != 0){
+	// 	ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icons_config, mdi_ranges);	
+	// }
 	
 	ImGuiStyle* s = igGetStyle();
 	s->Colors[ImGuiCol_Button] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
-	s->Colors[ImGuiCol_ButtonHovered] = ImVec4(0.1f, 0.1f, 0.12f, 1.0f);
+	s->Colors[ImGuiCol_ButtonHovered] = ImVec4(0.094f, 0.094f, 0.094f, 1.0f);
 	s->Colors[ImGuiCol_ButtonActive] = ImVec4(0.0f, 0.45f, 0.82f, 1.0f);
-
+	s->Colors[ImGuiCol_WindowBg] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
 	s->Colors[ImGuiCol_FrameBgActive] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
 	s->Colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.19f, 0.21f, 1.0f);
 	s->Colors[ImGuiCol_CheckMark] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
@@ -1656,6 +1897,7 @@ int main(int argc, char** argv) {
     user* usrs;
     chat* chats;
     uint16_t g_cid;
+	msg msgs;
 	// unsigned char* a;
 	// uint16_t aa;
 	// if(C_lreestr(a, aa)){
@@ -1701,13 +1943,13 @@ int main(int argc, char** argv) {
         float x = io->DisplaySize.x;
         float y = io->DisplaySize.y;
 
-		if(!gm.login && !gm.reg){
-			zc_chat(x, y, chat_schas);
+		if(/* !gm.login && !gm.reg){*/true){
+			zc_chat(x, y, chat_schas, &msgs, 0);
 			zc_voice(x, y);
 			zc_sw(x, y);
 	    }
 		if(gm.set){zc_settings(x, y);}
-		if(gm.reg){zc_register(x, y, aaa);}
+		//if(gm.reg){zc_register(x, y, aaa);}
 		// if(gm.login){zc_login(x, y, aaa);}
         igRender();
 
@@ -1727,7 +1969,8 @@ int main(int argc, char** argv) {
     cImGui_ImplDX11_Shutdown();
     cImGui_ImplWin32_Shutdown();
     igDestroyContext(NULL);
-
+	BD_off(stmts);
+	sqlite3_close(gm.db);
     CleanupDeviceD3D();
     DestroyWindow(hwnd);
     UnregisterClass(wc.lpszClassName, wc.hInstance);
