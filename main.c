@@ -8,6 +8,7 @@
 #include <wchar.h>
 #include <locale.h>
 #include <shellapi.h>
+#include <pthread.h>
 
 #define WOLFSSL_USER_SETTINGS
 #define WOLFSSL_LOW_MEMORY
@@ -140,7 +141,7 @@ typedef struct {
 	union{               // тут может быть только одна из трех строк, шоб меньше памяти жрало
 		char text[4096]; // текст до 4кб 
 		struct{
-			ITID* img_ptr;   // указатель на фото
+			ITID* img_ptr;// указатель на фото
 			double w, h;
 		} image;
 		char* path;      // путь до документа на отправку/просмотр
@@ -155,11 +156,13 @@ typedef struct {
 	uint32_t ns;         // кол-во непрочитанных
 	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
 	uint32_t lmid;	     // айди последнего сообщения
+	float offset;
+	
 } chat;
 
 typedef struct {
 	char name[32];       // имя юзера
-	uint32_t uid;          // айди юзера
+	uint32_t uid;        // айди юзера
 	bool ver;            // важный бумажный
 	ITID* ava_ptr;       //	указатель на аватарку
 	UT_hash_handle hh;   // для хэштаблицы
@@ -346,11 +349,23 @@ static bool C_lreestr(unsigned char* a){
 	return true;	
 }
 
+void V_pknc(chat* c, msg* msgs, uint32_t* count, user* us){
+	
+
+	
+}
+
+
 static bool f = false;
 static uint32_t cid_schas;
-static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count, user* us) {
+uint8_t load_d;
+bool r;
+
+
+static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, user* us) {
 	if (cid_schas != c->cid){
-		// надо вызвать функцию, чтобы она очистила и загрузила в us всех пользователей чата, а так же сообщения 
+		// надо вызвать функцию, чтобы она очистила и загрузила в us всех пользователей чата, а так же сообщения
+		// chat_schas = chat->cid;
 	}
 	igSetNextWindowSize(ImVec2(x*0.65, y), ImGuiCond_None);
     igSetNextWindowPos(ImVec2(x*0.35, 0), ImGuiCond_None);
@@ -384,10 +399,10 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, int msg_count, user* u
     const ImU32 color_border = 0xFFFFFFFF;
     ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 0.5f, ImDrawFlags_RoundCornersAll);
     ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 0.5f);
-	ImVec2 s = igCalcTextSize(chat->name);
+	ImVec2 s = igCalcTextSize(c>name);
 	float a = x*0.31575 - (y*0.048 + x*0.005 + s.x)*0.5;
 
-	ImDrawList_AddImage(idl, chat->ava_ptr, ImVec2(a, y*0.001), ImVec2(a+y*0.048, y*0.05));
+	ImDrawList_AddImage(idl, c->ava_ptr, ImVec2(a, y*0.001), ImVec2(a+y*0.048, y*0.05));
 	ImDrawList_AddText_Vec2(idl, ImVec2(a+y*0.049, y*0.001), 0xFFFFFFFF, chat->name, NULL);
 
     float header_offset = y * 0.05f;
@@ -802,26 +817,23 @@ static void zc_settings(short x, short y){ // db надо сюда
 
 int BD_init(sqlite3* db, STMTS* stmts) {
     int rc;
-
-    // Pragma-настройки
     sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA synchronous = 1;", NULL, NULL, NULL); // NORMAL режим безопаснее
+    sqlite3_exec(db, "PRAGMA synchronous = 1;", NULL, NULL, NULL); 
     sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
 
-    // Таблицы без BLOB — храним пути к файлам
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER PRIMARY KEY, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER PRIMARY KEY, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER PRIMARY KEY, MMBRS TEXT, LID INTEGER, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, AVA_PATH TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT);", NULL, NULL, NULL);
 
     // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
-                     "MID INTEGER PRIMARY KEY, "
+                     "MID INTEGER, "
                      "UID INTEGER, "
                      "CID INTEGER, "
-                     "CONTENT TEXT, "   // Текст сообщения ИЛИ путь к медиафайлу в blob/
-                     "TYPE INTEGER, "  // 0 - текст, 1 - фото, 2 - файл/док
+                     "CONTENT TEXT, "   // Текст сообщения ИЛИ путь к медиафайлу
+                     "TYPE INTEGER, "  // 0 - текст, 1 - фото, 2 - файл, 3 - док
                      "TIME TEXT"
                      ");", NULL, NULL, NULL);
 
