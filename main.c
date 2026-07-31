@@ -365,7 +365,9 @@ bool r;
 static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, user* us) {
 	if (cid_schas != c->cid){
 		// надо вызвать функцию, чтобы она очистила и загрузила в us всех пользователей чата, а так же сообщения
-		// chat_schas = chat->cid;
+		
+		
+		chat_schas = c->cid;
 	}
 	igSetNextWindowSize(ImVec2(x*0.65, y), ImGuiCond_None);
     igSetNextWindowPos(ImVec2(x*0.35, 0), ImGuiCond_None);
@@ -409,7 +411,7 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
     float chat_area_h = (y * 0.96f - p_h) - header_offset - (y * 0.01f);
 
     igSetCursorPos(ImVec2(x * 0.02f, header_offset));
-    igBeginChild("ChatScroll", ImVec2(x * 0.64f, chat_area_h), ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    igBeginChild("CS", ImVec2(x * 0.64f, chat_area_h), ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
 
     float avatarSize = x * 0.018f;
     float avatarRounding = avatarSize * 0.3f;
@@ -424,13 +426,12 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
         igPushID(id_str);
 
         ImVec2 cursorStartPos = igGetCursorPos();
-
-        // Сборка заголовка (Имя / время)
+		
         char header_str[128];
-        snprintf(header_str, sizeof(header_str), "UID:%d  %s", msgi->uid, msgi->time);
+		user* x = NULL;
+		HASH_FIND(hh, us, msgi->uid, sizeof(uint32_t), x);
+        snprintf(header_str, sizeof(header_str), "%s  \t\t\t %s", x->name, msgi->time);
         ImVec2 hSize = igCalcTextSizeEx(header_str, NULL, false, x * 0.54f);
-
-        // Вычисляем высоту сообщения в зависимости от его типа (0 - текст, 1 - картинка, 2 - док)
         double itemH = 0.0f;
 		double w;
         if (msgi->type == 1) { 
@@ -445,28 +446,21 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
         }
 
         ImVec2 screenPos = igGetCursorScreenPos();
-
-        // Отрисовка круглой аватарки (если img_ptr == NULL, будет прозрачный квадрат)
         ITID ava_tex = *msgi->ctnt.image.img_ptr; 
         ImDrawList_AddImageRounded(idl, (ITID)ava_tex, screenPos, ImVec2(screenPos.x + avatarSize, screenPos.y + avatarSize), ImVec2(0,0), ImVec2(1,1), 0xFFFFFFFF, avatarRounding, ImDrawFlags_None);
 
         igSetCursorPos(ImVec2(cursorStartPos.x, cursorStartPos.y));
         if (igInvisibleButton("##avatar_btn", ImVec2(avatarSize, avatarSize), ImGuiButtonFlags_None)) {
-            // Клик по аватарке (открытие профиля)
+            // Клик по аватарке 
         }
 
         igSetCursorPos(ImVec2(cursorStartPos.x + avatarSize + padding, cursorStartPos.y));
-
-		// регистрация (весь юзер), логин (юзер), создание чата(хедер, сообщения), сообщения, войс
-		
-        // Вычисление ширины фона сообщения
 
         ImVec2 msgPos = igGetCursorScreenPos();
         ImVec2 msgEnd = ImVec2(msgPos.x + w, msgPos.y + itemH - messageSpacing);
 
         ImDrawList_AddRectFilledEx(idl, msgPos, msgEnd, 0xFF353535, 12.0f, ImDrawFlags_RoundCornersAll); 
 
-        // Имя и время отправителя
         igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + padding));
         igSetWindowFontScale(0.8f);
         igTextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), header_str);
@@ -476,7 +470,7 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
         igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + hSize.y + padding));
         if (msgi->type == 1) {
             ImTextureRef img_tex = *msgi->ctnt.image.img_ptr;
-			double oo = msgi->ctnt.image.w / x*0.4;
+			double oo = msgi->ctnt.image.w / (x*0.4);
             int ww = msgi->ctnt.image.w > x*0.4 ? x*0.4 : msgi->ctnt.image.w;
             int hh = msgi->ctnt.image.w > x*0.4 ? msgi->ctnt.image.h*oo : msgi->ctnt.image.h;
             igImage(img_tex, ImVec2(ww, hh));
