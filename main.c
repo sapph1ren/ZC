@@ -9,12 +9,11 @@
 #include <locale.h>
 #include <shellapi.h>
 #include <pthread.h>
+#include <shlobj.h>
 
 #define WOLFSSL_USER_SETTINGS
 #define WOLFSSL_LOW_MEMORY
 #define WOLFSSL_SMALL_STACK
-#define OPENSSL_EXTRA
-#define HAVE_AESGCM
 #define HAVE_CHACHA
 #define HAVE_POLY1305
 #define WOLFSSL_TLS13
@@ -22,7 +21,7 @@
 #define HAVE_DH
 #define HAVE_RSA
 #define WOLFSSL_SHA512
-#define WOLFSSL_SHA384
+#define WOLFSSL_SHA256
 #define WOLFSSL_NO_DEF_TM_RESIST
 #define WOLFSSL_MINGW
 #define WOLFSSL_ANY_RECENT_WINDOWS
@@ -31,15 +30,15 @@
 #define WOLFSSL_KEY_GEN
 #define HAVE_AESGCM
 #define HAVE_HASHDRBG
-#define WOLFSSL_SHA512
-#define WOLFSSL_SHA384
-#define NO_PSK
-#define NO_SESSION_CACHE
+
+#include "wolfssl/user_settings.h"
 #include "wolfssl/options.h"
 #include "wolfssl/ssl.h"
 #include "wolfssl/wolfcrypt/ecc.h"
 #include "wolfssl/wolfcrypt/sha512.h"
+#include "wolfssl/wolfcrypt/sha256.h"
 #include "wolfssl/wolfcrypt/asn.h"
+
 
 #include "curl/curl.h"
 
@@ -54,6 +53,7 @@
 
 #include "other/uthash.h"
 
+#define COBJMACROS
 #include <d3d11.h>      
 #include <d3dcompiler.h>
 
@@ -70,18 +70,22 @@
 
 #define JSMN_IMPLEMENTATION
 #define JSMN_HEADER
-#include "jsmn.h"
+#include "other/jsmn.h"
 
 #include "zipcord2.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include "other/stb_image.h"
 
 #include "icons.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
 
+
+const char* BLOB_PATH "C:/Klei/DoNotOpen"
+const wchar_t* WCHART_PATH = L"C:/Klei/DoNotOpen/";
+#define MAX_PATH 1024
 #define ITID ImTextureRef
 #define ImVec2(x, y) ((ImVec2){x, y})
 #define imu32(r, g, b, a) ((ImU32){r, g, b, a})
@@ -97,7 +101,7 @@ void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 extern LRESULT cImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
+typedef enum { CB_TEXT, CB_NONE, CB_IMAGE, CB_FILE } CBType;
 extern char _binary_museo_ttf_start[];
 extern char _binary_museo_ttf_end[];
 
@@ -112,25 +116,20 @@ typedef struct {
     sqlite3_stmt *save_user;
     sqlite3_stmt *save_chat;
     sqlite3_stmt *save_msg;
-    sqlite3_stmt *save_user_avatar; // Новый
-    sqlite3_stmt *save_chat_avatar; // Новый
 
     sqlite3_stmt *get_me;
     sqlite3_stmt *get_user_by_uid;
     sqlite3_stmt *get_user_by_name;
     sqlite3_stmt *get_chat_by_cid;
     sqlite3_stmt *get_msgs_by_cid;
-
-    sqlite3_stmt *update_me;
-    sqlite3_stmt *update_user;
-    sqlite3_stmt *update_chat;
-    sqlite3_stmt *update_msg;
-
+	
     sqlite3_stmt *delete_msg_by_mid;
     sqlite3_stmt *delete_msgs_by_cid;
     sqlite3_stmt *delete_user_by_uid;	
 } STMTS;
 STMTS* stmts;
+
+typedef enum {MT_TEXT, MT_PHOTO, MT_DOC, MT_VIDEO} MT_T;
 
 typedef struct {
 	uint32_t mid;        // айди сообщения
@@ -144,20 +143,22 @@ typedef struct {
 			ITID* img_ptr;// указатель на фото
 			double w, h;
 		} image;
-		char* path;      // путь до документа на отправку/просмотр
 	} ctnt;
-	uint8_t type;        // тип сообщения, чтобы правильно и быстро извлекать содержимое 
+	MT_T type;           // тип сообщения, чтобы правильно и быстро извлекать содержимое 
 } msg;
 
 typedef struct {
 	uint32_t cid;        // айди чата
 	char name[32];       // название чата
 	ITID* ava_ptr;       // указатель на аватарку чата
+	uint32_t* usrs;      // айди юзеров, кроме своего vec_free()
 	uint32_t ns;         // кол-во непрочитанных
 	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
 	uint32_t lmid;	     // айди последнего сообщения
 	float offset;
-	
+	bool ls;             // это лс?
+	UT_hash_handle hh;   // для хэштаблицы
+	char obn[16];        // obn
 } chat;
 
 typedef struct {
@@ -166,6 +167,7 @@ typedef struct {
 	bool ver;            // важный бумажный
 	ITID* ava_ptr;       //	указатель на аватарку
 	UT_hash_handle hh;   // для хэштаблицы
+	char obn[16];        // obn
 } user; 
 
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
@@ -178,7 +180,6 @@ typedef struct {
 	ITID* ava_ptr;       // указатель на аватарку
 	bool ver;            // важный бумажный
 	char obn[16];        // дата и время синхронизации с сервером
-	zc_engine_t* zc;     // указатель на сеть и аудио
 	bool login;          // в логине?
 	bool reg;            // в реге?
 	bool set;            // в настройках?
@@ -189,15 +190,85 @@ typedef struct {
 
 static me gm;
 
-void zcbeui_adduser(user* u, user* us){
+void zcbeui_adduser(user* u, user* us){ // добавить юзера в хэштаблицу юзеров чата для быстрого поиска и использования аватарок
 	HASH_ADD(hh, us, uid, sizeof(size_t), u);
 }
 
-user* zcbeui_finduser(user* u, user* us, size_t* uid){
+user* zcbeui_finduser(user* u, user* us, size_t* uid){ // найти юзера в эхтаблице по айди
 	HASH_FIND(hh, us, uid, sizeof(size_t), u);
 	return u;
 }
 
+// надо сделать удаление юзеров из хэштаблицы
+
+char* V_gffp(){ // получить байты файла по пути (аналог V_liff он для файлов)
+	
+}
+
+char* V_cibp(const uint32_t a){ // получить путь для аватарки
+	char* b = malloc(strlen(BLOB_PATH)+5); // 1 - \0, 4 - uid/cid
+	sprintf(b, "%s/%u", BLOB_PATH, a);
+	return b;
+} // обязательно free()
+
+unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size_t* out_size) { // изображение в сырые байты
+    if (!texture_handle) return NULL;
+
+    ID3D11ShaderResourceView* srv = (ID3D11ShaderResourceView*)texture_handle;
+    
+    ID3D11Resource* res = NULL;
+    ID3D11ShaderResourceView_GetResource(srv, &res);
+    
+    ID3D11Texture2D* texture = NULL;
+    ID3D11Resource_QueryInterface(res, &IID_ID3D11Texture2D, (void**)&texture);
+    ID3D11Resource_Release(res);
+
+    D3D11_TEXTURE2D_DESC desc;
+    ID3D11Texture2D_GetDesc(texture, &desc);
+    *out_width = desc.Width;
+    *out_height = desc.Height;
+
+    D3D11_TEXTURE2D_DESC staging_desc = desc;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.BindFlags = 0;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    staging_desc.MiscFlags = 0;
+
+    ID3D11Texture2D* staging_tex = NULL;
+    ID3D11Device_CreateTexture2D(g_pd3dDevice, &staging_desc, NULL, &staging_tex); 
+    ID3D11DeviceContext_CopyResource(g_pd3dDeviceContext, (ID3D11Resource*)staging_tex, (ID3D11Resource*)texture);
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = ID3D11DeviceContext_Map(g_pd3dDeviceContext, (ID3D11Resource*)staging_tex, 0, D3D11_MAP_READ, 0, &mapped);
+    
+    unsigned char* clean_pixels = NULL;
+	size_t total_clean_size;
+    if (SUCCEEDED(hr)) {
+        int bytes_per_pixel = 4; 
+        size_t clean_row_pitch = desc.Width * bytes_per_pixel;
+        total_clean_size = clean_row_pitch * desc.Height;
+
+        clean_pixels = (unsigned char*)malloc(total_clean_size);
+
+        if (clean_pixels) {
+            unsigned char* src = (unsigned char*)mapped.pData;
+            unsigned char* dst = clean_pixels;
+
+            for (UINT y = 0; y < desc.Height; y++) {
+                memcpy(dst, src, clean_row_pitch);
+                src += mapped.RowPitch; 
+                dst += clean_row_pitch; 
+            }
+        }
+        ID3D11DeviceContext_Unmap(g_pd3dDeviceContext, (ID3D11Resource*)staging_tex, 0);
+    }
+
+
+    ID3D11Texture2D_Release(staging_tex);
+    ID3D11Texture2D_Release(texture);
+	*out_size = total_clean_size;
+    return clean_pixels; 
+}
 
 
 // size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
@@ -232,6 +303,257 @@ user* zcbeui_finduser(user* u, user* us, size_t* uid){
 //         return "";
 //     }
 // }
+
+int BD_init(sqlite3* db) {
+    int rc;
+    sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA synchronous = 1;", NULL, NULL, NULL); 
+    sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
+
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW BLOB, UID INTEGER, VER BOOLEAN, OBN TEXT, AVA BLOB);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, AVA_PATH TEXT, OBN TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT OBN TEXT);", NULL, NULL, NULL);
+
+    // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
+                     "MID INTEGER, "
+                     "UID INTEGER, "
+                     "CID INTEGER, "
+                     "CONTENT TEXT, "   // Текст сообщения ИЛИ путь к медиафайлу
+                     "TYPE INTEGER, "  // 0 - текст, 1 - фото, 2 - файл, 3 - док
+                     "TIME TEXT"
+                     ");", NULL, NULL, NULL);
+
+    // Составной индекс для эффективного скролла и сортировки
+    sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid_mid ON MSGS(CID, MID);", NULL, NULL, NULL);
+
+    // === СОХРАНЕНИЕ ===
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, AVA_PATH, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_user, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, AVA_PATH, OBN) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // === ИЗВЛЕЧЕНИЕ ===
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA_PATH FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, AVA_PATH FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+	rc = sqlite3_prepare_v2(db, "SELECT UID, VER, AVA_PATH FROM USERS WHERE NAME = ?;", -1, &stmts->get_user_by_name, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, AVA_PATH FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    // === УДАЛЕНИЕ ===
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts->delete_msg_by_mid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts->delete_msgs_by_cid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts->delete_user_by_uid, NULL);
+    if (rc != SQLITE_OK) return rc;
+
+    return SQLITE_OK;
+}
+
+void BD_off() {
+    if (stmts->save_me) sqlite3_finalize(stmts->save_me);
+    if (stmts->save_user) sqlite3_finalize(stmts->save_user);
+    if (stmts->save_chat) sqlite3_finalize(stmts->save_chat);
+    if (stmts->save_msg) sqlite3_finalize(stmts->save_msg);
+
+    if (stmts->get_me) sqlite3_finalize(stmts->get_me);
+    if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
+    if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
+    if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
+    if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
+
+    if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
+    if (stmts->delete_user_by_uid) sqlite3_finalize(stmts->delete_user_by_uid);  
+}
+
+void build_full_path(char* out_buf, size_t buf_size, const char* base_dir, const char* relative_path) {
+    snprintf(out_buf, buf_size, "%s/%s", base_dir, relative_path);
+}
+
+int bd_save_me(const me* m){
+	int w, h;
+	size_t a;
+
+    sqlite3_bind_text(stmts->save_me, 1, m->name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_blob(stmts->save_me, 2, m->hash, 64, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmts->save_me, 3, m->uid);
+	sqlite3_bind_int(stmts->save_me, 4, m->ver ? 1 : 0);
+    sqlite3_bind_text(stmts->save_me, 5, m->obn, -1, SQLITE_TRANSIENT);	
+	sqlite3_bind_blob(stmts->save_me, 6, V_i2b(m->ava_ptr , &w, &h, &a), a, SQLITE_TRANSIENT);
+	int rc = sqlite3_step(stmts->save_me);
+	sqlite3_clear_bindings(stmts->save_me);	
+	return (rc==SQLITE_DONE) ? 0 : -1;
+}
+
+int bd_save_user(const user* u){
+	char* a;
+	V_cibp(u->uid, u->obn);
+	sqlite3_bind_text(stmts->save_user, 1, u->name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmts->save_user, 2, u->uid);
+	sqlite3_bind_int(stmts->save_user, 3, u->ver ? 1:0);
+	sqlite3_bind_text(stmts->save_user, 5 u->obn , -1, SQLITE_TRANSIENT);	
+	sqlite3_bind_text(stmts->save_user, 4, a, -1, SQLITE_TRANSIENT);
+	int rc = sqlite3_step(stmts->save_me);
+	sqlite3_clear_bindings(stmts->save_me);	
+	free(a);
+	return (rc==SQLITE_DONE) ? 0 : -1;
+}
+
+int bd_save_msg(const msg* m){
+    sqlite3_bind_int(stmts->save_msg, 1, m->mid);
+    sqlite3_bind_int(stmts->save_msg, 2, m->uid);
+    sqlite3_bind_int(stmts->save_msg, 3, m->cid);
+	char*a;
+	V_cibp(m->mid, m->time);
+	
+    if (m->type == MT_TEXT) {
+        sqlite3_bind_text(stmts->save_msg, 4, m->ctnt.text, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_text(stmts->save_msg, 4, a, -1, SQLITE_TRANSIENT);
+    }
+
+    sqlite3_bind_int(stmts->save_msg, 5, m->type);
+    sqlite3_bind_text(stmts->save_msg, 6, m->time, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmts->save_msg);
+    sqlite3_reset(stmts->save_msg);
+    sqlite3_clear_bindings(stmts->save_msg);
+	free(a);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
+    size_t size = vec_size(c->usrs);
+    if (!c || !c->usrs || size == 0) {
+        char* empty = malloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+
+  
+    size_t capacity = size * 5 ; 
+    char* result = malloc(capacity);
+    if (!result) return NULL;
+
+    result[0] = '\0'; 
+    size_t current_len = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        char temp[6];
+        int written = snprintf(temp, sizeof(temp), (i == 0) ? "%u" : "=%u", c->usrs[i]);
+        memcpy(result + current_len, temp, written);
+        current_len += written;
+    }
+
+    result[current_len] = '\0';
+    return result;
+}
+
+
+
+int bd_save_chat(const chat* c) {
+    sqlite3_bind_text(stmts->save_chat, 1, c->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts->save_chat, 2, c->cid);
+	char* a = V_cu2c(c);
+	sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT); 
+    sqlite3_bind_int(stmts->save_chat, 4, c->lmid);
+    sqlite3_bind_text(stmts->save_chat, 5, c->ava_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmts->save_chat, 6, c->obn, -1, SQLITE_TRANSIENT); 
+    int rc = sqlite3_step(stmts->save_chat);
+    sqlite3_reset(stmts->save_chat);
+    sqlite3_clear_bindings(stmts->save_chat);
+	free(a);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_count, size_t* out_count, const char* base_blob_dir) {
+    sqlite3_bind_int(stmt, 1, cid);
+
+    size_t count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
+        msg* m = &out_array[count];
+
+        m->mid = (uint32_t)sqlite3_column_int(stmt, 0);
+        m->uid = (uint16_t)sqlite3_column_int(stmt, 1);
+        m->cid = cid;
+        m->dost = true;
+        m->type = (uint8_t)sqlite3_column_int(stmt, 3);
+
+        const unsigned char* content = sqlite3_column_text(stmt, 2);
+
+        if (m->type == 0) {
+            // Текст
+            if (content) snprintf(m->ctnt.text, sizeof(m->ctnt.text), "%s", content);
+            else m->ctnt.text[0] = '\0';
+        } 
+        else if (m->type == 1) {
+            // Картинка: в content лежит относительный путь "photos/img1.jpg"
+            if (content) {
+                char full_path[512];
+                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
+                
+                // m->ctnt.img_ptr = engine_load_texture(full_path);
+            } else {
+                m->ctnt.image.img_ptr = NULL;
+            }
+        } 
+        else if (m->type == 2) {
+            // Документ/Файл: выделяем путь
+            if (content) {
+                char full_path[512];
+                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
+                m->ctnt.path = strdup(full_path);
+            } else {
+                m->ctnt.path = NULL;
+            }
+        }
+
+        const unsigned char* time_str = sqlite3_column_text(stmt, 4);
+        if (time_str) snprintf(m->time, sizeof(m->time), "%s", time_str);
+
+        count++;
+    }
+
+    *out_count = count;
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return 0;
+}
+
+int bd_delete_msg_with_file(sqlite3* db, STMTS* stmts, uint32_t mid, const char* base_blob_dir) {
+    // 1. Сначала узнаем путь к файлу (если сообщение было медиа/файлом)
+    // SQL: "SELECT CONTENT, TYPE FROM MSGS WHERE MID = ?;"
+    // Если TYPE == 1 или 2, берём relative_path и с помощью remove(full_path) удаляем файл с диска.
+
+    // 2. Удаляем запись из БД
+    sqlite3_bind_int(stmts->delete_msg_by_mid, 1, mid);
+    int rc = sqlite3_step(stmts->delete_msg_by_mid);
+    
+    sqlite3_reset(stmts->delete_msg_by_mid);
+    sqlite3_clear_bindings(stmts->delete_msg_by_mid);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
 
 const char* S_getsv(){
 	
@@ -290,7 +612,7 @@ char* v_gt(char* a) {
 
 unsigned char* v_gf(uint32_t* fc, char* p){
     if (!OpenClipboard(NULL)) return NULL;
-
+	wchar_t wpath[MAX_PATH];
     if (IsClipboardFormatAvailable(CF_HDROP)) {
         HANDLE hData = GetClipboardData(CF_HDROP);
         if (hData != NULL) {
@@ -298,16 +620,13 @@ unsigned char* v_gf(uint32_t* fc, char* p){
             if (hDrop != NULL) {
                 *fc = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
                 if (*fc > 0) {
-                    // Простейший пример: берём только первый файл
-                    wchar_t wpath[MAX_PATH];
                     if (DragQueryFileW(hDrop, 0, wpath, MAX_PATH)) {
-                        // Конвертируем в UTF-8
                         WideCharToMultiByte(CP_UTF8, 0, wpath, -1, p, MAX_PATH, NULL, NULL);
                     }
                 }
                 GlobalUnlock(hData);
                 CloseClipboard();
-                return (unsigned char*)"ok"; // заглушка
+                return (unsigned char*)wpath; // заглушка
             }
         }
     }
@@ -316,7 +635,7 @@ unsigned char* v_gf(uint32_t* fc, char* p){
 }
 
 unsigned char* v_gi(){
-	
+	// тут передается в буфере сырые байты фото. надо создать битмап, достать инфу и сохранить в структуру и в предпросмотр вывести
 
 	
 }
@@ -325,7 +644,7 @@ unsigned char* v_gi(){
 
 static bool C_hash(void* d, size_t dl, byte* out_hash) {
     wc_Sha512 s;
-    if (wc_Sha512Init(&s) != 0) return false;
+    if (wc_InitSha512(&s) != 0) return false;
     if (wc_Sha512Update(&s, (const byte*)d, (word32)dl) != 0) return false;
     if (wc_Sha512Final(&s, out_hash) != 0) return false;
     wc_Sha512Free(&s);
@@ -344,7 +663,8 @@ static bool C_sreestr(unsigned char* d){
 static bool C_lreestr(unsigned char* a){
 	HKEY h;
 	if(RegOpenKeyExA(HKEY_CURRENT_USER, "Printers\\Brother\\Drivers", 0, KEY_READ, &h) != ERROR_SUCCESS) {return false;}
-	if(RegQueryValueExA(h, "WiFi ID", NULL, NULL, (LPBYTE)a, 64) != ERROR_SUCCESS) {return false;}
+	DWORD len = 64;
+	if(RegQueryValueExA(h, "WiFi ID", NULL, NULL, (LPBYTE)a, &len) != ERROR_SUCCESS) {return false;}
 	RegCloseKey(h);
 	return true;	
 }
@@ -367,7 +687,7 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
 		// надо вызвать функцию, чтобы она очистила и загрузила в us всех пользователей чата, а так же сообщения
 		
 		
-		chat_schas = c->cid;
+		cid_schas = c->cid;
 	}
 	igSetNextWindowSize(ImVec2(x*0.65, y), ImGuiCond_None);
     igSetNextWindowPos(ImVec2(x*0.35, 0), ImGuiCond_None);
@@ -401,11 +721,11 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
     const ImU32 color_border = 0xFFFFFFFF;
     ImDrawList_AddRectFilledEx(idl, p_min, p_max, color_rect, 0.5f, ImDrawFlags_RoundCornersAll);
     ImDrawList_AddRectEx(idl, p_min, p_max, color_border, 5.0f, ImDrawFlags_RoundCornersAll, 0.5f);
-	ImVec2 s = igCalcTextSize(c>name);
+	ImVec2 s = igCalcTextSize(c->name);
 	float a = x*0.31575 - (y*0.048 + x*0.005 + s.x)*0.5;
 
-	ImDrawList_AddImage(idl, c->ava_ptr, ImVec2(a, y*0.001), ImVec2(a+y*0.048, y*0.05));
-	ImDrawList_AddText_Vec2(idl, ImVec2(a+y*0.049, y*0.001), 0xFFFFFFFF, chat->name, NULL);
+	ImDrawList_AddImage(idl, *c->ava_ptr, ImVec2(a, y*0.001), ImVec2(a+y*0.048, y*0.05));
+	ImDrawList_AddTextEx(idl, ImVec2(a+y*0.049, y*0.001), 0xFFFFFFFF, c->name, NULL);
 
     float header_offset = y * 0.05f;
     float chat_area_h = (y * 0.96f - p_h) - header_offset - (y * 0.01f);
@@ -428,9 +748,9 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
         ImVec2 cursorStartPos = igGetCursorPos();
 		
         char header_str[128];
-		user* x = NULL;
-		HASH_FIND(hh, us, msgi->uid, sizeof(uint32_t), x);
-        snprintf(header_str, sizeof(header_str), "%s  \t\t\t %s", x->name, msgi->time);
+		user* xx = NULL;
+		HASH_FIND(hh, us, &msgi->uid, sizeof(uint32_t), xx);
+        snprintf(header_str, sizeof(header_str), "%s  \t\t\t %s", xx->name, msgi->time);
         ImVec2 hSize = igCalcTextSizeEx(header_str, NULL, false, x * 0.54f);
         double itemH = 0.0f;
 		double w;
@@ -580,8 +900,8 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
 
 
 static void zc_voice(short x, short y){
-	igSetNextWindowSize((ImVec2){x*0.35, y*0.7}, NULL);
-	igSetNextWindowPos((ImVec2){0, 0}, NULL);
+	igSetNextWindowSize((ImVec2){x*0.35, y*0.7}, 0);
+	igSetNextWindowPos((ImVec2){0, 0}, 0);
 	igBegin("v", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
 
@@ -591,8 +911,8 @@ static void zc_voice(short x, short y){
 }
 
 static void zc_sw(short x, short y){
-	igSetNextWindowSize((ImVec2){x*0.35, y*0.3}, NULL);
-	igSetNextWindowPos((ImVec2){0, y*0.7}, NULL);
+	igSetNextWindowSize((ImVec2){x*0.35, y*0.3}, 0);
+	igSetNextWindowPos((ImVec2){0, y*0.7}, 0);
 	igBegin("s", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
 	
@@ -696,8 +1016,8 @@ bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** ou
 static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
 	static char l[32];
 	static char p[32];
-	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
-	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
+	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
+	igSetNextWindowPos(ImVec2(x*0.36, 0), 0);
 	igBegin("##l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
@@ -710,12 +1030,12 @@ static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){
 	igPushItemWidth(x*0.271);
 	// igSetCursorPosX(x*0.37);
 	igText("Логин:");
-	igInputText("##ll", &l, 32, ImGuiInputTextFlags_None);
+	igInputText("##ll", l, 32, ImGuiInputTextFlags_None);
 
 	igSpacing();
 
 	igText("Пароль:");
-	igInputText("##lp", &p, 32, ImGuiInputTextFlags_Password);
+	igInputText("##lp", p, 32, ImGuiInputTextFlags_Password);
 	igPopItemWidth();
 	igSpacing(); igSpacing();
 
@@ -735,8 +1055,8 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	static char l[33];
 	static char p[33];
 	static char b[33];
-	igSetNextWindowSize(ImVec2(x*0.28, y), NULL);
-	igSetNextWindowPos(ImVec2(x*0.36, 0), NULL);
+	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
+	igSetNextWindowPos(ImVec2(x*0.36, 0), 0);
 	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){0.1f, 0.1f, 0.12f, 1.0f });
 	igPushStyleColor(ImGuiCol_Border, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
 	igPushStyleVar(ImGuiStyleVar_FrameRounding, gm.r);
@@ -752,17 +1072,17 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igPushItemWidth(x*0.271);
 	// igSetCursorPosX(x*0.37);
 	igText("Ваше имя:");
-	igInputText("##rl", &l, IM_ARRAYSIZE(l), ImGuiInputTextFlags_None);
+	igInputText("##rl", l, IM_ARRAYSIZE(l), ImGuiInputTextFlags_None);
 
 	igSpacing(); igSpacing(); igSpacing();
 
 	igText("Ваш пароль:");
-	igInputText("##rp", &p, IM_ARRAYSIZE(p), ImGuiInputTextFlags_Password);
+	igInputText("##rp", p, IM_ARRAYSIZE(p), ImGuiInputTextFlags_Password);
 
 	igSpacing(); igSpacing(); igSpacing();
 
 	igText("Ваш BDU ключ (32символа):");
-	igInputText("##rb", &b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
+	igInputText("##rb", b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
 	igPopItemWidth();
 	
 	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
@@ -809,207 +1129,6 @@ static void zc_settings(short x, short y){ // db надо сюда
 	igEnd();
 }
 
-int BD_init(sqlite3* db, STMTS* stmts) {
-    int rc;
-    sqlite3_exec(db, "PRAGMA page_size = 4096;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA synchronous = 1;", NULL, NULL, NULL); 
-    sqlite3_exec(db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
-
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW TEXT, UID INTEGER, VER BOOLEAN, OBN TEXT, AVA_PATH TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, AVA_PATH TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT);", NULL, NULL, NULL);
-
-    // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
-                     "MID INTEGER, "
-                     "UID INTEGER, "
-                     "CID INTEGER, "
-                     "CONTENT TEXT, "   // Текст сообщения ИЛИ путь к медиафайлу
-                     "TYPE INTEGER, "  // 0 - текст, 1 - фото, 2 - файл, 3 - док
-                     "TIME TEXT"
-                     ");", NULL, NULL, NULL);
-
-    // Составной индекс для эффективного скролла и сортировки
-    sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid_mid ON MSGS(CID, MID);", NULL, NULL, NULL);
-
-    // === СОХРАНЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_user, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    // === ИЗВЛЕЧЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA_PATH FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, OBN, AVA_PATH FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN, AVA_PATH FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    // === УДАЛЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts->delete_msg_by_mid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts->delete_msgs_by_cid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts->delete_user_by_uid, NULL);
-    if (rc != SQLITE_OK) return rc;
-
-    return SQLITE_OK;
-}
-
-void BD_off(STMTS* stmts) {
-    if (stmts->save_me) sqlite3_finalize(stmts->save_me);
-    if (stmts->save_user) sqlite3_finalize(stmts->save_user);
-    if (stmts->save_chat) sqlite3_finalize(stmts->save_chat);
-    if (stmts->save_msg) sqlite3_finalize(stmts->save_msg);
-    if (stmts->save_user_avatar) sqlite3_finalize(stmts->save_user_avatar); // Новый
-    if (stmts->save_chat_avatar) sqlite3_finalize(stmts->save_chat_avatar); // Новый
-
-    if (stmts->get_me) sqlite3_finalize(stmts->get_me);
-    if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
-    if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
-    if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
-    if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
-
-    if (stmts->update_me) sqlite3_finalize(stmts->update_me);
-    if (stmts->update_user) sqlite3_finalize(stmts->update_user);
-    if (stmts->update_chat) sqlite3_finalize(stmts->update_chat);
-    if (stmts->update_msg) sqlite3_finalize(stmts->update_msg);                  // Добавлен из структуры
-
-    if (stmts->delete_msg_by_mid) sqlite3_finalize(stmts->delete_msg_by_mid);    // Добавлен из структуры
-    if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
-    if (stmts->delete_user_by_uid) sqlite3_finalize(stmts->delete_user_by_uid);  // Добавлен из структуры
-}
-
-void build_full_path(char* out_buf, size_t buf_size, const char* base_dir, const char* relative_path) {
-    snprintf(out_buf, buf_size, "%s/%s", base_dir, relative_path);
-}
-
-// Сохранить сообщение (текст или путь к файлу)
-int bd_save_msg(sqlite3_stmt* stmt, const msg* m, const char* relative_file_path) {
-    sqlite3_bind_int(stmt, 1, m->mid);
-    sqlite3_bind_int(stmt, 2, m->uid);
-    sqlite3_bind_int(stmt, 3, m->cid);
-
-    // Записываем контент в зависимости от типа
-    if (m->type == 0) {
-        // Обычный текст
-        sqlite3_bind_text(stmt, 4, m->ctnt.text, -1, SQLITE_STATIC);
-    } else {
-        // Фото или файл: пишем относительный путь к файлу в blob/
-        const char* path_to_save = (m->type == 2 && m->ctnt.path) ? m->ctnt.path : relative_file_path;
-        sqlite3_bind_text(stmt, 4, path_to_save ? path_to_save : "", -1, SQLITE_STATIC);
-    }
-
-    sqlite3_bind_int(stmt, 5, m->type);
-    sqlite3_bind_text(stmt, 6, m->time, -1, SQLITE_STATIC);
-
-    int rc = sqlite3_step(stmt);
-    sqlite3_reset(stmt);
-    sqlite3_clear_bindings(stmt);
-    return (rc == SQLITE_DONE) ? 0 : -1;
-}
-
-// Сохранить чат (включая путь к аватарке)
-int bd_save_chat(sqlite3_stmt* stmt, const chat* c, const char* ava_path) {
-    sqlite3_bind_text(stmt, 1, c->name, -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, c->cid);
-    sqlite3_bind_text(stmt, 3, "", -1, SQLITE_STATIC); // MMBRS
-    sqlite3_bind_int(stmt, 4, c->lmid);
-    sqlite3_bind_text(stmt, 5, "", -1, SQLITE_STATIC); // OBN
-    sqlite3_bind_text(stmt, 6, ava_path ? ava_path : "", -1, SQLITE_STATIC);
-
-    int rc = sqlite3_step(stmt);
-    sqlite3_reset(stmt);
-    sqlite3_clear_bindings(stmt);
-    return (rc == SQLITE_DONE) ? 0 : -1;
-}
-
-int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_count, size_t* out_count, const char* base_blob_dir) {
-    sqlite3_bind_int(stmt, 1, cid);
-
-    size_t count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
-        msg* m = &out_array[count];
-
-        m->mid = (uint32_t)sqlite3_column_int(stmt, 0);
-        m->uid = (uint16_t)sqlite3_column_int(stmt, 1);
-        m->cid = cid;
-        m->dost = true;
-        m->type = (uint8_t)sqlite3_column_int(stmt, 3);
-
-        const unsigned char* content = sqlite3_column_text(stmt, 2);
-
-        if (m->type == 0) {
-            // Текст
-            if (content) snprintf(m->ctnt.text, sizeof(m->ctnt.text), "%s", content);
-            else m->ctnt.text[0] = '\0';
-        } 
-        else if (m->type == 1) {
-            // Картинка: в content лежит относительный путь "photos/img1.jpg"
-            if (content) {
-                char full_path[512];
-                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
-                
-                // m->ctnt.img_ptr = engine_load_texture(full_path);
-            } else {
-                m->ctnt.image.img_ptr = NULL;
-            }
-        } 
-        else if (m->type == 2) {
-            // Документ/Файл: выделяем путь
-            if (content) {
-                char full_path[512];
-                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
-                m->ctnt.path = strdup(full_path);
-            } else {
-                m->ctnt.path = NULL;
-            }
-        }
-
-        const unsigned char* time_str = sqlite3_column_text(stmt, 4);
-        if (time_str) snprintf(m->time, sizeof(m->time), "%s", time_str);
-
-        count++;
-    }
-
-    *out_count = count;
-    sqlite3_reset(stmt);
-    sqlite3_clear_bindings(stmt);
-    return 0;
-}
-
-int bd_delete_msg_with_file(sqlite3* db, STMTS* stmts, uint32_t mid, const char* base_blob_dir) {
-    // 1. Сначала узнаем путь к файлу (если сообщение было медиа/файлом)
-    // SQL: "SELECT CONTENT, TYPE FROM MSGS WHERE MID = ?;"
-    // Если TYPE == 1 или 2, берём relative_path и с помощью remove(full_path) удаляем файл с диска.
-
-    // 2. Удаляем запись из БД
-    sqlite3_bind_int(stmts->delete_msg_by_mid, 1, mid);
-    int rc = sqlite3_step(stmts->delete_msg_by_mid);
-    
-    sqlite3_reset(stmts->delete_msg_by_mid);
-    sqlite3_clear_bindings(stmts->delete_msg_by_mid);
-
-    return (rc == SQLITE_DONE) ? 0 : -1;
-}
-
 int main(int argc, char** argv) {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
     RegisterClassEx(&wc);
@@ -1020,10 +1139,9 @@ int main(int argc, char** argv) {
         UnregisterClass(wc.lpszClassName, wc.hInstance);
         return 1;
     }
-
+	SHCreateDirectoryExW(NULL, WCHART_PATH, NULL);
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
-	user* usrs_in_chat = NULL;
     igCreateContext(NULL);
     ImGuiIO* io = igGetIO();
     io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
@@ -1071,35 +1189,13 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    zc_engine_t* zc = ZC_CreateEngine(false, ZC_Handler); // false = потужни ПК
-    if (!zc) {
-        wolfSSL_Cleanup();
-        WSACleanup();
-        cImGui_ImplDX11_Shutdown();
-        cImGui_ImplWin32_Shutdown();
-        igDestroyContext(NULL);
-        CleanupDeviceD3D();
-        DestroyWindow(hwnd);
-        UnregisterClass(wc.lpszClassName, wc.hInstance);
-        return 12;
-    }
-
-    chat* chat_schas = malloc(sizeof(chat));
-    user* usrs;
-    chat* chats;
+    chat* chat_schas = NULL;
+    user* usrs = NULL;
+    chat* chats = NULL;
     uint16_t g_cid;
 	msg msgs;
-	// unsigned char* a;
-	// uint16_t aa;
-	// if(C_lreestr(a, aa)){
-	// 	if(S_bdu(a, aa)){
-	// 		gm.login = true;
-	// 		gm.reg = false;
-	// 		gm.set = false;
-	// 		gm.con = false;
-	// 	}
-	// }
 	gm.reg = true;
+	gm.login = false;
 	gm.r = 12.0f;
 	ID3D11ShaderResourceView* aaa;
 	int w_a, h_a;
@@ -1134,14 +1230,14 @@ int main(int argc, char** argv) {
         float x = io->DisplaySize.x;
         float y = io->DisplaySize.y;
 
-		if(/* !gm.login && !gm.reg){*/true){
+		if(!gm.login && !gm.reg){
 			zc_chat(x, y, chat_schas, &msgs, 0, usrs);
 			zc_voice(x, y);
 			zc_sw(x, y);
 	    }
 		if(gm.set){zc_settings(x, y);}
-		//if(gm.reg){zc_register(x, y, aaa);}
-		// if(gm.login){zc_login(x, y, aaa);}
+		if(gm.reg){zc_register(x, y, aaa);}
+		if(gm.login){zc_login(x, y, aaa);}
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
@@ -1154,7 +1250,6 @@ int main(int argc, char** argv) {
         MsgWaitForMultipleObjects(0, NULL, FALSE, INFINITE, QS_ALLINPUT);
     }
 
-    ZC_DestroyEngine(zc);
     free(chat_schas);
 
     cImGui_ImplDX11_Shutdown();
