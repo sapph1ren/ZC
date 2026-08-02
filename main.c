@@ -40,7 +40,7 @@
 #include "wolfssl/wolfcrypt/asn.h"
 
 
-#include "curl/curl.h"
+// #include "curl/curl.h"
 
 #include "zlib/zlib.h"
 #include "zlib/zconf.h"
@@ -78,13 +78,15 @@
 #include "other/stb_image.h"
 
 #include "icons.h"
+#include "vector.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
 
 
-const char* BLOB_PATH "C:/Klei/DoNotOpen"
+const char* BLOB_PATH = "C:/Klei/DoNotOpen";
 const wchar_t* WCHART_PATH = L"C:/Klei/DoNotOpen/";
+
 #define MAX_PATH 1024
 #define ITID ImTextureRef
 #define ImVec2(x, y) ((ImVec2){x, y})
@@ -205,9 +207,19 @@ char* V_gffp(){ // получить байты файла по пути (ана�
 	
 }
 
-char* V_cibp(const uint32_t a){ // получить путь для аватарки
-	char* b = malloc(strlen(BLOB_PATH)+5); // 1 - \0, 4 - uid/cid
-	sprintf(b, "%s/%u", BLOB_PATH, a);
+char* V_cibp(const uint32_t a, bool user){ // получить путь для аватарки
+	char* b = malloc(strlen(BLOB_PATH)+6); // 1 - \0, 4 - uid/cid
+	if (user){sprintf(b, "%s/u%u", BLOB_PATH, a);}
+	else {sprintf(b, "%s/c%u", BLOB_PATH, a);}
+	return b;
+} // обязательно free()
+
+char* V_cmc(const uint32_t a, bool image){
+	char* user_profile = getenv("USERPROFILE");
+	char* b = malloc(strlen(user_p rofile)+6); // 1 - \0, 4 - uid/cid
+	if (image){sprintf(b, "%s/i%u", user_profile, a);}
+	else {sprintf(b, "%s/d%u", user_profile, a);}
+    free(user_profile);
 	return b;
 } // обязательно free()
 
@@ -268,6 +280,97 @@ unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size
     ID3D11Texture2D_Release(texture);
 	*out_size = total_clean_size;
     return clean_pixels; 
+}
+
+
+bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
+    int image_width = 0, image_height = 0;
+
+    unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
+    if (!image_data) return false;
+
+
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = image_width,
+        .Height = image_height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc.Count = 1,
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE
+    };
+
+    D3D11_SUBRESOURCE_DATA subResource = {
+        .pSysMem = image_data,
+        .SysMemPitch = image_width * 4
+    };
+
+    ID3D11Texture2D* pTexture = NULL;
+    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    stbi_image_free(image_data);
+
+    if (!pTexture) return false;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+        .Format = desc.Format,
+        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+        .Texture2D.MipLevels = desc.MipLevels
+    };
+    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
+    pTexture->lpVtbl->Release(pTexture); 
+
+    if (FAILED(hr)) return false;
+
+    *out_width = image_width;
+    *out_height = image_height;
+    return true;
+}
+bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
+
+    if (!data || len == 0) return false;
+
+    int image_width = 0, image_height = 0;
+    int image_channels = 0;
+    
+    unsigned char* image_data = stbi_load_from_memory(data, (int)len, &image_width, &image_height, &image_channels, 4);
+    if (!image_data) return false;
+
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = image_width,
+        .Height = image_height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc.Count = 1,
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE
+    };
+
+    D3D11_SUBRESOURCE_DATA subResource = {
+        .pSysMem = image_data,
+        .SysMemPitch = image_width * 4
+    };
+
+    ID3D11Texture2D* pTexture = NULL;
+    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    stbi_image_free(image_data);
+
+    if (!pTexture) return false;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+        .Format = desc.Format,
+        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+        .Texture2D.MipLevels = desc.MipLevels
+    };
+    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
+    pTexture->lpVtbl->Release(pTexture); 
+
+    if (FAILED(hr)) return false;
+
+    *out_width = image_width;
+    *out_height = image_height;
+    return true;
 }
 
 
@@ -394,25 +497,25 @@ void build_full_path(char* out_buf, size_t buf_size, const char* base_dir, const
 int bd_save_me(const me* m){
 	int w, h;
 	size_t a;
-
+	unsigned char* b = V_i2b(m->ava_ptr , &w, &h, &a);
     sqlite3_bind_text(stmts->save_me, 1, m->name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_blob(stmts->save_me, 2, m->hash, 64, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmts->save_me, 3, m->uid);
 	sqlite3_bind_int(stmts->save_me, 4, m->ver ? 1 : 0);
     sqlite3_bind_text(stmts->save_me, 5, m->obn, -1, SQLITE_TRANSIENT);	
-	sqlite3_bind_blob(stmts->save_me, 6, V_i2b(m->ava_ptr , &w, &h, &a), a, SQLITE_TRANSIENT);
+	sqlite3_bind_blob(stmts->save_me, 6, b, a, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmts->save_me);
-	sqlite3_clear_bindings(stmts->save_me);	
+	sqlite3_clear_bindings(stmts->save_me);
+	free(b);
 	return (rc==SQLITE_DONE) ? 0 : -1;
 }
 
 int bd_save_user(const user* u){
-	char* a;
-	V_cibp(u->uid, u->obn);
+	char* a = V_cibp(u->uid, true);
 	sqlite3_bind_text(stmts->save_user, 1, u->name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmts->save_user, 2, u->uid);
 	sqlite3_bind_int(stmts->save_user, 3, u->ver ? 1:0);
-	sqlite3_bind_text(stmts->save_user, 5 u->obn , -1, SQLITE_TRANSIENT);	
+	sqlite3_bind_text(stmts->save_user, 5, u->obn , -1, SQLITE_TRANSIENT);	
 	sqlite3_bind_text(stmts->save_user, 4, a, -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmts->save_me);
 	sqlite3_clear_bindings(stmts->save_me);	
@@ -425,11 +528,11 @@ int bd_save_msg(const msg* m){
     sqlite3_bind_int(stmts->save_msg, 2, m->uid);
     sqlite3_bind_int(stmts->save_msg, 3, m->cid);
 	char*a;
-	V_cibp(m->mid, m->time);
 	
     if (m->type == MT_TEXT) {
         sqlite3_bind_text(stmts->save_msg, 4, m->ctnt.text, -1, SQLITE_TRANSIENT);
     } else {
+		a = V_cmc(m->mid, (m->type == MT_PHOTO) ? true : false);
         sqlite3_bind_text(stmts->save_msg, 4, a, -1, SQLITE_TRANSIENT);
     }
 
@@ -475,14 +578,16 @@ int bd_save_chat(const chat* c) {
     sqlite3_bind_text(stmts->save_chat, 1, c->name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmts->save_chat, 2, c->cid);
 	char* a = V_cu2c(c);
-	sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT); 
+	sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT); //mmbrs 
     sqlite3_bind_int(stmts->save_chat, 4, c->lmid);
-    sqlite3_bind_text(stmts->save_chat, 5, c->ava_path, -1, SQLITE_TRANSIENT);
+	char*b = V_cibp(c->cid, false);
+	sqlite3_bind_text(stmts->save_chat, 5, b, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmts->save_chat, 6, c->obn, -1, SQLITE_TRANSIENT); 
     int rc = sqlite3_step(stmts->save_chat);
     sqlite3_reset(stmts->save_chat);
     sqlite3_clear_bindings(stmts->save_chat);
 	free(a);
+	free(b);
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
@@ -501,36 +606,28 @@ int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_cou
 
         const unsigned char* content = sqlite3_column_text(stmt, 2);
 
-        if (m->type == 0) {
-            // Текст
+        if (m->type == MT_TEXT) {
             if (content) snprintf(m->ctnt.text, sizeof(m->ctnt.text), "%s", content);
             else m->ctnt.text[0] = '\0';
         } 
-        else if (m->type == 1) {
-            // Картинка: в content лежит относительный путь "photos/img1.jpg"
+        else if (m->type == MT_PHOTO) {
+
             if (content) {
-                char full_path[512];
-                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
-                
-                // m->ctnt.img_ptr = engine_load_texture(full_path);
-            } else {
-                m->ctnt.image.img_ptr = NULL;
-            }
-        } 
-        else if (m->type == 2) {
-            // Документ/Файл: выделяем путь
-            if (content) {
-                char full_path[512];
-                build_full_path(full_path, sizeof(full_path), base_blob_dir, (const char*)content);
-                m->ctnt.path = strdup(full_path);
-            } else {
-                m->ctnt.path = NULL;
-            }
+                char*a = V_cmc(m->mid, true);
+				ID3D11ShaderResourceView* b;
+				int* w;
+				int *h;
+				V_liff(a, &b, w, h);
+                m->ctnt.image.img_ptr = (ITID*)b;
+				m->ctnt.image.w = *w;
+				m->ctnt.image.h = *h;				
+				free(a);				
+            } 
         }
 
-        const unsigned char* time_str = sqlite3_column_text(stmt, 4);
-        if (time_str) snprintf(m->time, sizeof(m->time), "%s", time_str);
-
+        char* bb = sqlite3_column_text(stmt, 4);
+		sprintf(m->time, bb, 16);
+		
         count++;
     }
 
@@ -540,22 +637,10 @@ int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_cou
     return 0;
 }
 
-int bd_delete_msg_with_file(sqlite3* db, STMTS* stmts, uint32_t mid, const char* base_blob_dir) {
-    // 1. Сначала узнаем путь к файлу (если сообщение было медиа/файлом)
-    // SQL: "SELECT CONTENT, TYPE FROM MSGS WHERE MID = ?;"
-    // Если TYPE == 1 или 2, берём relative_path и с помощью remove(full_path) удаляем файл с диска.
 
-    // 2. Удаляем запись из БД
-    sqlite3_bind_int(stmts->delete_msg_by_mid, 1, mid);
-    int rc = sqlite3_step(stmts->delete_msg_by_mid);
-    
-    sqlite3_reset(stmts->delete_msg_by_mid);
-    sqlite3_clear_bindings(stmts->delete_msg_by_mid);
+unsigned char* v_gii(){
+	// тут передается в буфере сырые байты фото. надо создать битмап, достать инфу и сохранить в структуру и в предпросмотр вывести
 
-    return (rc == SQLITE_DONE) ? 0 : -1;
-}
-
-const char* S_getsv(){
 	
 }
 
@@ -634,14 +719,6 @@ unsigned char* v_gf(uint32_t* fc, char* p){
     return NULL;
 }
 
-unsigned char* v_gi(){
-	// тут передается в буфере сырые байты фото. надо создать битмап, достать инфу и сохранить в структуру и в предпросмотр вывести
-
-	
-}
-
-
-
 static bool C_hash(void* d, size_t dl, byte* out_hash) {
     wc_Sha512 s;
     if (wc_InitSha512(&s) != 0) return false;
@@ -685,8 +762,7 @@ bool r;
 static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, user* us) {
 	if (cid_schas != c->cid){
 		// надо вызвать функцию, чтобы она очистила и загрузила в us всех пользователей чата, а так же сообщения
-		
-		
+				
 		cid_schas = c->cid;
 	}
 	igSetNextWindowSize(ImVec2(x*0.65, y), ImGuiCond_None);
@@ -788,14 +864,14 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
 
         // Само содержимое (Текст, Картинка или Файл)
         igSetCursorScreenPos(ImVec2(msgPos.x + padding, msgPos.y + hSize.y + padding));
-        if (msgi->type == 1) {
+        if (msgi->type == MT_PHOTO) {
             ImTextureRef img_tex = *msgi->ctnt.image.img_ptr;
 			double oo = msgi->ctnt.image.w / (x*0.4);
             int ww = msgi->ctnt.image.w > x*0.4 ? x*0.4 : msgi->ctnt.image.w;
             int hh = msgi->ctnt.image.w > x*0.4 ? msgi->ctnt.image.h*oo : msgi->ctnt.image.h;
             igImage(img_tex, ImVec2(ww, hh));
-        } else if (msgi->type == 2) {
-            igText("Файл: %s", msgi->ctnt.path);
+        } else if (msgi->type == MT_DOC) {
+            igText("Файл: %u", msgi->mid);
         } else {
             igTextWrapped("%s", msgi->ctnt.text);
         }
@@ -921,98 +997,6 @@ static void zc_sw(short x, short y){
 	igEnd();
 }
 
-bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
-{
-    int image_width = 0, image_height = 0;
-
-    unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
-    if (!image_data) return false;
-
-
-    D3D11_TEXTURE2D_DESC desc = {
-        .Width = image_width,
-        .Height = image_height,
-        .MipLevels = 1,
-        .ArraySize = 1,
-        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
-        .SampleDesc.Count = 1,
-        .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_SHADER_RESOURCE
-    };
-
-    D3D11_SUBRESOURCE_DATA subResource = {
-        .pSysMem = image_data,
-        .SysMemPitch = image_width * 4
-    };
-
-    ID3D11Texture2D* pTexture = NULL;
-    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
-    stbi_image_free(image_data);
-
-    if (!pTexture) return false;
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-        .Format = desc.Format,
-        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-        .Texture2D.MipLevels = desc.MipLevels
-    };
-    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
-    pTexture->lpVtbl->Release(pTexture); 
-
-    if (FAILED(hr)) return false;
-
-    *out_width = image_width;
-    *out_height = image_height;
-    return true;
-}
-bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) 
-{
-
-    if (!data || len == 0) return false;
-
-    int image_width = 0, image_height = 0;
-    int image_channels = 0;
-    
-    unsigned char* image_data = stbi_load_from_memory(data, (int)len, &image_width, &image_height, &image_channels, 4);
-    if (!image_data) return false;
-
-    D3D11_TEXTURE2D_DESC desc = {
-        .Width = image_width,
-        .Height = image_height,
-        .MipLevels = 1,
-        .ArraySize = 1,
-        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
-        .SampleDesc.Count = 1,
-        .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_SHADER_RESOURCE
-    };
-
-    D3D11_SUBRESOURCE_DATA subResource = {
-        .pSysMem = image_data,
-        .SysMemPitch = image_width * 4
-    };
-
-    ID3D11Texture2D* pTexture = NULL;
-    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
-    stbi_image_free(image_data);
-
-    if (!pTexture) return false;
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-        .Format = desc.Format,
-        .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-        .Texture2D.MipLevels = desc.MipLevels
-    };
-    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
-    pTexture->lpVtbl->Release(pTexture); 
-
-    if (FAILED(hr)) return false;
-
-    *out_width = image_width;
-    *out_height = image_height;
-    return true;
-}
-
 static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
 	static char l[32];
 	static char p[32];
@@ -1066,7 +1050,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	// ImVec2 aa = igCalcTextSize("Авторизация");
 	igSetWindowFontScale(2.0f);
 	// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
-	igText(ICON_MD_LOGIN);
+	igText("Регистрация");
 	igSetWindowFontScale(1.0f);
 
 	igPushItemWidth(x*0.271);
@@ -1084,6 +1068,9 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igText("Ваш BDU ключ (32символа):");
 	igInputText("##rb", b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
 	igPopItemWidth();
+
+	igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
+	
 	
 	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
 	igSetCursorPosY(y*0.94);
