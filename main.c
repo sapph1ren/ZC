@@ -123,7 +123,9 @@ typedef struct {
     sqlite3_stmt *get_user_by_uid;
     sqlite3_stmt *get_user_by_name;
     sqlite3_stmt *get_chat_by_cid;
+    sqlite3_stmt *get_chat_by_name;
     sqlite3_stmt *get_msgs_by_cid;
+    sqlite3_stmt *get_msgs_by_name;
 	
     sqlite3_stmt *delete_msg_by_mid;
     sqlite3_stmt *delete_msgs_by_cid;
@@ -154,7 +156,8 @@ typedef struct {
 	char name[NICK_LEN];       // название чата
 	ITID* ava_ptr;       // указатель на аватарку чата
 	uint32_t* usrs;      // айди юзеров, кроме своего vec_free()
-	uint32_t ns;         // кол-во непрочитанных
+	uint32_t uc;         // колво юзеров
+	size_t ns;         // кол-во непрочитанных
 	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
 	uint32_t lmid;	     // айди последнего сообщения
 	float offset;
@@ -375,24 +378,24 @@ bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** ou
 }
 
 
-char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
+unsigned char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
     size_t size = vec_size(c->usrs);
     if (!c || !c->usrs || size == 0) {
-        char* empty = malloc(1);
+        unsigned char* empty = malloc(1);
         if (empty) empty[0] = '\0';
         return empty;
     }
 
   
     size_t capacity = size * 5 ; 
-    char* result = malloc(capacity);
+    unsigned char* result = malloc(capacity);
     if (!result) return NULL;
 
     result[0] = '\0'; 
     size_t current_len = 0;
 
     for (size_t i = 0; i < size; i++) {
-        char temp[6];
+        unsigned char temp[6];
         int written = snprintf(temp, sizeof(temp), (i == 0) ? "%u" : "=%u", c->usrs[i]);
         memcpy(result + current_len, temp, written);
         current_len += written;
@@ -400,8 +403,32 @@ char* V_cu2c(chat* c) { // сохранить пользователей чат�
 
     result[current_len] = '\0';
     return result;
-}
+} // free()
 
+uint32_t* V_luim(char* in, size_t* c){
+    size_t count = 1;
+    for (const char *p = in; *p != '\0'; p++) {if (*p == '=') { count++; }}
+
+    uint32_t *arr = (uint32_t*)malloc(count * sizeof(uint32_t));
+    if (!arr) return NULL;
+
+    size_t idx = 0;
+    char *endptr;
+    const char *p = in;
+
+    while (idx < count) {
+        arr[idx] = (uint32_t)strtoul(p, &endptr, 10);
+        idx++;
+        if (*endptr == '=') {
+            p = endptr + 1; 
+        } else {
+            break;
+        }
+    }
+
+    *c = idx; 
+    return arr;
+} // free()
 
 // size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
 //     size_t total = size * nmemb;
@@ -446,7 +473,7 @@ int BD_init(sqlite3* db) {
 
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS ME(NAME TEXT, PASSW BLOB, UID INTEGER, VER BOOLEAN, OBN TEXT, AVA BLOB);", NULL, NULL, NULL);
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, AVA_PATH TEXT, OBN TEXT);", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT OBN TEXT);", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT, OBN TEXT, LS BOOLEAN);", NULL, NULL, NULL);
 
     // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
@@ -468,7 +495,7 @@ int BD_init(sqlite3* db) {
     rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts->save_user, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN, LS) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
     if (rc != SQLITE_OK) return rc;
 
     rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
@@ -484,9 +511,13 @@ int BD_init(sqlite3* db) {
 	rc = sqlite3_prepare_v2(db, "SELECT UID, VET, OBN FROM USERS WHERE NAME = ?;", -1, &stmts->get_user_by_name, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN, LS FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
+    rc = sqlite3_prepare_v2(db, "SELECT CID, MMBRS, LID, OBN, LS FROM CHATS WHERE NAME = ?;", -1, &stmts->get_chat_by_name, NULL);
+    if (rc != SQLITE_OK) return rc;
+	
+	
     rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
@@ -513,6 +544,7 @@ void BD_off() {
     if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
     if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
     if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
+    if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_name);
     if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
 
     if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
@@ -578,7 +610,8 @@ int bd_save_chat(const chat* c) {
 	char* a = V_cu2c(c);
 	sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT); //mmbrs 
     sqlite3_bind_int(stmts->save_chat, 4, c->lmid);
-	sqlite3_bind_text(stmts->save_chat, 5, c->obn, -1, SQLITE_TRANSIENT); 
+	sqlite3_bind_text(stmts->save_chat, 5, c->obn, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmts->save_chat, 6, (c->ls ? 1 : 0));
     int rc = sqlite3_step(stmts->save_chat);
     sqlite3_reset(stmts->save_chat);
     sqlite3_clear_bindings(stmts->save_chat);
@@ -628,13 +661,14 @@ user bd_get_user_uid(uint32_t uid, user* uu){ // добавить проверк
 }
 
 
-user bd_get_user_name(char name[NICK_LEN], user* uu){ // добавить проверку на наличие аватарки, подгрузка новой, подгрузка самого пользователя
+user bd_get_user_name(char* name, user* uu){ // добавить проверку на наличие аватарки, подгрузка новой, подгрузка самого пользователя
 	user u = {};
 	sqlite3_bind_text(stmts->get_user_by_name, 1, name, -1, SQLITE_TRANSIENT);
 		
 	sqlite3_step(stmts->get_user_by_name);
 	u.uid = sqlite3_column_int(stmts->get_user_by_name, 0);
-	strncpy(name, u.name, NICK_LEN);
+	strncpy(u.name, name, strlen(name));
+	u.name[-1] = '\0';	
 	u.ver = (sqlite3_column_int(stmts->get_user_by_name, 1) == 1 ? true : false);
 	strncpy(sqlite3_column_text(stmts->get_user_by_name, 2), u.obn, 15);
 	u.obn[15] = '\0';
@@ -649,6 +683,57 @@ user bd_get_user_name(char name[NICK_LEN], user* uu){ // добавить про
 	return u;
 }
 
+chat bd_get_chat_cid(uint32_t cid, chat* cc){
+	chat c = {};
+
+	sqlite3_bind_int(stmts->get_msgs_by_cid, 1, cid);
+	sqlite3_step(stmts->get_msgs_by_cid);
+
+	strncpy(sqlite3_column_text(stmts->get_msgs_by_cid, 0), c.name, NICK_LEN-1);
+	c.name[-1] = '\0';
+	c.cid = cid;
+	size_t* ccc;
+	c.usrs = V_luim(sqlite3_column_text(stmts->get_msgs_by_cid, 1), ccc);
+	c.uc = *ccc;
+	c.lmid = sqlite3_column_int(stmts->get_msgs_by_cid, 2);
+	strncpy(sqlite3_column_text(stmts->get_msgs_by_cid, 3), c.obn, 15);
+	c.obn[-1] = '\0';
+	c.ls = (sqlite3_column_int(stmts->get_msgs_by_cid, 4) == 1 ? true : false);
+	char* a=V_cibp(c.cid, c.ls);
+	int w, h;
+	V_liff(a, (ID3D11ShaderResourceView**)c.ava_ptr, &w, &h);
+	
+    sqlite3_reset(stmts->get_msgs_by_cid);
+    sqlite3_clear_bindings(stmts->get_msgs_by_cid);
+	if(cc){*cc=c;}
+	return c;
+}
+
+chat bd_get_chat_name(char* name, chat* cc){
+	chat c = {};
+
+	sqlite3_bind_text(stmts->get_msgs_by_name, 1, name, -1, SQLITE_TRANSIENT);
+	sqlite3_step(stmts->get_msgs_by_name);
+
+	strncpy(c.name, name, strlen(name));
+	c.name[-1] = '\0';
+	c.cid = sqlite3_column_int(stmts->get_msgs_by_name, 0);
+	size_t*ccc;
+	c.usrs = V_luim(sqlite3_column_text(stmts->get_msgs_by_name, 1), ccc);
+	c.uc = *ccc;
+	c.lmid = sqlite3_column_int(stmts->get_msgs_by_name, 2);
+	strncpy(sqlite3_column_text(stmts->get_msgs_by_name, 3), c.obn, 15);
+	c.obn[-1] = '\0';
+	c.ls = (sqlite3_column_int(stmts->get_msgs_by_name, 4) == 1 ? true : false);
+	char* a=V_cibp(c.cid, c.ls);
+	int w, h;
+	V_liff(a, (ID3D11ShaderResourceView**)c.ava_ptr, &w, &h);
+	
+    sqlite3_reset(stmts->get_msgs_by_name);
+    sqlite3_clear_bindings(stmts->get_msgs_by_name);
+	if(cc){*cc=c;}
+	return c;
+}
 
 
 // переделать
