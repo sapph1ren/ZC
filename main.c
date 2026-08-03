@@ -83,7 +83,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
 
-
+#define NICK_LEN 32
 const char* BLOB_PATH = "C:/Klei/DoNotOpen";
 const wchar_t* WCHART_PATH = L"C:/Klei/DoNotOpen/";
 
@@ -151,7 +151,7 @@ typedef struct {
 
 typedef struct {
 	uint32_t cid;        // айди чата
-	char name[32];       // название чата
+	char name[NICK_LEN];       // название чата
 	ITID* ava_ptr;       // указатель на аватарку чата
 	uint32_t* usrs;      // айди юзеров, кроме своего vec_free()
 	uint32_t ns;         // кол-во непрочитанных
@@ -164,7 +164,7 @@ typedef struct {
 } chat;
 
 typedef struct {
-	char name[32];       // имя юзера
+	char name[NICK_LEN];       // имя юзера
 	uint32_t uid;        // айди юзера
 	bool ver;            // важный бумажный
 	ITID* ava_ptr;       //	указатель на аватарку
@@ -175,7 +175,7 @@ typedef struct {
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
 
 typedef struct {
-	char name[32];       // имя
+	char name[NICK_LEN];       // имя
 	uint32_t uid;        // айди юзера
 	unsigned char* hash; // хэш пароля
 	float r;             // углы
@@ -188,6 +188,7 @@ typedef struct {
 	bool con;            // в консоли?
 	STMTS stmts;         // запросы в бд
 	sqlite3* db;         // сама бд
+	int w,h;             // размеры фото 
 } me;
 
 static me gm;
@@ -216,9 +217,9 @@ char* V_cibp(const uint32_t a, bool user){ // получить путь для �
 
 char* V_cmc(const uint32_t a, bool image){
 	char* user_profile = getenv("USERPROFILE");
-	char* b = malloc(strlen(user_p rofile)+6); // 1 - \0, 4 - uid/cid
-	if (image){sprintf(b, "%s/i%u", user_profile, a);}
-	else {sprintf(b, "%s/d%u", user_profile, a);}
+	char* b = malloc(strlen(user_profile)+16); // 1 - \0, 4 - uid/cid
+	if (image){sprintf(b, "%s\\Downloads\\i%u", user_profile, a);}
+	else {sprintf(b, "%s\\Downloads\\d%u", user_profile, a);}
     free(user_profile);
 	return b;
 } // обязательно free()
@@ -374,6 +375,34 @@ bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** ou
 }
 
 
+char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
+    size_t size = vec_size(c->usrs);
+    if (!c || !c->usrs || size == 0) {
+        char* empty = malloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+
+  
+    size_t capacity = size * 5 ; 
+    char* result = malloc(capacity);
+    if (!result) return NULL;
+
+    result[0] = '\0'; 
+    size_t current_len = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        char temp[6];
+        int written = snprintf(temp, sizeof(temp), (i == 0) ? "%u" : "=%u", c->usrs[i]);
+        memcpy(result + current_len, temp, written);
+        current_len += written;
+    }
+
+    result[current_len] = '\0';
+    return result;
+}
+
+
 // size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
 //     size_t total = size * nmemb;
 //     out->append(static_cast<char*>(contents), total);
@@ -433,29 +462,29 @@ int BD_init(sqlite3* db) {
     sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid_mid ON MSGS(CID, MID);", NULL, NULL, NULL);
 
     // === СОХРАНЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA_PATH) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, AVA_PATH, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_user, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts->save_user, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, AVA_PATH, OBN) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN) VALUES (?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
     if (rc != SQLITE_OK) return rc;
 
     rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
     if (rc != SQLITE_OK) return rc;
 
     // === ИЗВЛЕЧЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA_PATH FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, AVA_PATH FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, OBN FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_prepare_v2(db, "SELECT UID, VER, AVA_PATH FROM USERS WHERE NAME = ?;", -1, &stmts->get_user_by_name, NULL);
+	rc = sqlite3_prepare_v2(db, "SELECT UID, VET, OBN FROM USERS WHERE NAME = ?;", -1, &stmts->get_user_by_name, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, AVA_PATH FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
     rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
@@ -511,15 +540,12 @@ int bd_save_me(const me* m){
 }
 
 int bd_save_user(const user* u){
-	char* a = V_cibp(u->uid, true);
 	sqlite3_bind_text(stmts->save_user, 1, u->name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmts->save_user, 2, u->uid);
 	sqlite3_bind_int(stmts->save_user, 3, u->ver ? 1:0);
-	sqlite3_bind_text(stmts->save_user, 5, u->obn , -1, SQLITE_TRANSIENT);	
-	sqlite3_bind_text(stmts->save_user, 4, a, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmts->save_user, 4, u->obn , -1, SQLITE_TRANSIENT);	
 	int rc = sqlite3_step(stmts->save_me);
 	sqlite3_clear_bindings(stmts->save_me);	
-	free(a);
 	return (rc==SQLITE_DONE) ? 0 : -1;
 }
 
@@ -545,34 +571,6 @@ int bd_save_msg(const msg* m){
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
-char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
-    size_t size = vec_size(c->usrs);
-    if (!c || !c->usrs || size == 0) {
-        char* empty = malloc(1);
-        if (empty) empty[0] = '\0';
-        return empty;
-    }
-
-  
-    size_t capacity = size * 5 ; 
-    char* result = malloc(capacity);
-    if (!result) return NULL;
-
-    result[0] = '\0'; 
-    size_t current_len = 0;
-
-    for (size_t i = 0; i < size; i++) {
-        char temp[6];
-        int written = snprintf(temp, sizeof(temp), (i == 0) ? "%u" : "=%u", c->usrs[i]);
-        memcpy(result + current_len, temp, written);
-        current_len += written;
-    }
-
-    result[current_len] = '\0';
-    return result;
-}
-
-
 
 int bd_save_chat(const chat* c) {
     sqlite3_bind_text(stmts->save_chat, 1, c->name, -1, SQLITE_TRANSIENT);
@@ -580,17 +578,80 @@ int bd_save_chat(const chat* c) {
 	char* a = V_cu2c(c);
 	sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT); //mmbrs 
     sqlite3_bind_int(stmts->save_chat, 4, c->lmid);
-	char*b = V_cibp(c->cid, false);
-	sqlite3_bind_text(stmts->save_chat, 5, b, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmts->save_chat, 6, c->obn, -1, SQLITE_TRANSIENT); 
+	sqlite3_bind_text(stmts->save_chat, 5, c->obn, -1, SQLITE_TRANSIENT); 
     int rc = sqlite3_step(stmts->save_chat);
     sqlite3_reset(stmts->save_chat);
     sqlite3_clear_bindings(stmts->save_chat);
 	free(a);
-	free(b);
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
+me bd_get_me(me* mm){
+	me m = {};
+
+	sqlite3_step(stmts->get_me);
+	strncpy(sqlite3_column_text(stmts->get_me, 0), m.name, NICK_LEN-1);
+	m.name[-1] = '\0';
+	m.hash = (unsigned char*)sqlite3_column_blob(stmts->get_me, 1);
+	m.uid = sqlite3_column_int(stmts->get_me, 2);
+	m.ver = (sqlite3_column_int(stmts->get_me, 3) == 1 ? true : false);
+	strncpy(sqlite3_column_text(stmts->get_me, 4), m.obn, 15);
+	m.obn[-1] = '\0';
+	V_lifm((unsigned char*)sqlite3_column_blob(stmts->get_me, 5), sqlite3_column_bytes(stmts->get_me, 5), (ID3D11ShaderResourceView **)m.ava_ptr, &m.w, &m.h);
+	if(mm){*mm=m;}
+    sqlite3_reset(stmts->get_me);
+    sqlite3_clear_bindings(stmts->get_me);
+	return m;
+}
+
+user bd_get_user_uid(uint32_t uid, user* uu){ // добавить проверку на наличие аватарки, подгрузка новой, подгрузка самого пользователя
+	user u = {};
+	sqlite3_bind_int(stmts->get_user_by_uid, 1, uid);
+		
+	sqlite3_step(stmts->get_user_by_uid);
+	u.uid = uid;
+	strncpy(sqlite3_column_text(stmts->get_user_by_uid, 0), u.name, NICK_LEN-1);
+	u.name[-1] = '\0';
+	u.ver = (sqlite3_column_int(stmts->get_user_by_uid, 1) == 1 ? true : false);
+	strncpy(sqlite3_column_text(stmts->get_user_by_uid, 2), u.obn, 15);
+	u.obn[-1] = '\0';
+	int w, h;
+	char* a =V_cibp(uid, true);
+	V_liff(a, (ID3D11ShaderResourceView**)u.ava_ptr, &w, &h);
+	free(a);
+
+	
+	if(uu){*uu=u;}
+    sqlite3_reset(stmts->get_user_by_uid);
+    sqlite3_clear_bindings(stmts->get_user_by_uid);
+	return u;
+}
+
+
+user bd_get_user_name(char name[NICK_LEN], user* uu){ // добавить проверку на наличие аватарки, подгрузка новой, подгрузка самого пользователя
+	user u = {};
+	sqlite3_bind_text(stmts->get_user_by_name, 1, name, -1, SQLITE_TRANSIENT);
+		
+	sqlite3_step(stmts->get_user_by_name);
+	u.uid = sqlite3_column_int(stmts->get_user_by_name, 0);
+	strncpy(name, u.name, NICK_LEN);
+	u.ver = (sqlite3_column_int(stmts->get_user_by_name, 1) == 1 ? true : false);
+	strncpy(sqlite3_column_text(stmts->get_user_by_name, 2), u.obn, 15);
+	u.obn[15] = '\0';
+	int w, h;
+	char* a =V_cibp(u.uid, true);
+	V_liff(a, (ID3D11ShaderResourceView **)u.ava_ptr, &w, &h);
+	free(a);
+
+	if(uu){*uu=u;}
+    sqlite3_reset(stmts->get_user_by_name);
+    sqlite3_clear_bindings(stmts->get_user_by_name);
+	return u;
+}
+
+
+
+// переделать
 int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_count, size_t* out_count, const char* base_blob_dir) {
     sqlite3_bind_int(stmt, 1, cid);
 
@@ -598,9 +659,9 @@ int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_cou
     while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
         msg* m = &out_array[count];
 
-        m->mid = (uint32_t)sqlite3_column_int(stmt, 0);
-        m->uid = (uint16_t)sqlite3_column_int(stmt, 1);
-        m->cid = cid;
+        m->mid  = (uint32_t)sqlite3_column_int(stmt, 0);
+        m->uid  = (uint16_t)sqlite3_column_int(stmt, 1);
+        m->cid  = cid;
         m->dost = true;
         m->type = (uint8_t)sqlite3_column_int(stmt, 3);
 
