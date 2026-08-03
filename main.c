@@ -84,8 +84,8 @@
 #pragma comment(lib, "crypt32.lib")
 
 #define NICK_LEN 32
-const char* BLOB_PATH = "C:/Klei/DoNotOpen";
-const wchar_t* WCHART_PATH = L"C:/Klei/DoNotOpen/";
+const char* BLOB_PATH = "C:\\Klei\\DoNotOpen";
+const wchar_t* WCHART_PATH = L"C:\\Klei\\DoNotOpen";
 
 #define MAX_PATH 1024
 #define ITID ImTextureRef
@@ -213,8 +213,8 @@ char* V_gffp(){ // получить байты файла по пути (ана�
 
 char* V_cibp(const uint32_t a, bool user){ // получить путь для аватарки
 	char* b = malloc(strlen(BLOB_PATH)+6); // 1 - \0, 4 - uid/cid
-	if (user){sprintf(b, "%s/u%u", BLOB_PATH, a);}
-	else {sprintf(b, "%s/c%u", BLOB_PATH, a);}
+	if (user){sprintf(b, "%s\\u%u", BLOB_PATH, a);}
+	else {sprintf(b, "%s\\c%u", BLOB_PATH, a);}
 	return b;
 } // обязательно free()
 
