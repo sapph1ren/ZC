@@ -1,12 +1,12 @@
 TARGET = Zipcord.exe
 CC = gcc
 
-CFLAGS = -std=c17 -O3 -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -Wimplicit-function-declaration -w -DNDEBUG -I. -I./wolfssl -DWOLFSSL_USER_SETTINGS
+CFLAGS = -std=c17 -O3 -fno-plt -ffunction-sections -fdata-sections -fno-ident -fstack-protector-strong -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -Wimplicit-function-declaration -Wincompatible-pointer-types -w -DNDEBUG -I. -I./wolfssl -DWOLFSSL_USER_SETTINGS
 
 
 SRC = main.c
 
-STATIC_OBJS =  md3.o museo.o 5.obj 4.obj sqlite3.o
+STATIC_OBJS =  md3.o museo.o 5.obj 4.obj sqlite3.o r.o
 
 OBJS = $(SRC:.c=.o)
 
@@ -28,6 +28,7 @@ $(TARGET): $(OBJS)
 
 run: $(TARGET)
 	./$(TARGET)
+
 
 clean:
 	del /q $(TARGET)

@@ -9,7 +9,11 @@
 #include <locale.h>
 #include <shellapi.h>
 #include <pthread.h>
+#include <commdlg.h>
 #include <shlobj.h>
+#include <wchar.h>
+
+
 
 #define WOLFSSL_USER_SETTINGS
 #define WOLFSSL_LOW_MEMORY
@@ -185,7 +189,6 @@ typedef struct {
 	ITID* ava_ptr;       // указатель на аватарку
 	bool ver;            // важный бумажный
 	char obn[16];        // дата и время синхронизации с сервером
-	bool login;          // в логине?
 	bool reg;            // в реге?
 	bool set;            // в настройках?
 	bool con;            // в консоли?
@@ -207,24 +210,32 @@ user* zcbeui_finduser(user* u, user* us, size_t* uid){ // найти юзера 
 
 // надо сделать удаление юзеров из хэштаблицы
 
-char* V_gffp(){ // получить байты файла по пути (аналог V_liff он для файлов)
+unsigned char* V_gffp(){ // получить байты файла по пути (аналог V_liff он для файлов)
 	
 }
 
-char* V_cibp(const uint32_t a, bool user){ // получить путь для аватарки
+wchar_t* V_c2w(const char* a){
+	wchar_t* aa;
+	mbstowcs_s(NULL, aa, strlen(a)+1, a, _TRUNCATE);
+	return aa;
+} // free()
+
+wchar_t* V_cibp(const uint32_t a, bool user){ // получить путь для аватарки
 	char* b = malloc(strlen(BLOB_PATH)+6); // 1 - \0, 4 - uid/cid
 	if (user){sprintf(b, "%s\\u%u", BLOB_PATH, a);}
 	else {sprintf(b, "%s\\c%u", BLOB_PATH, a);}
-	return b;
+	wchar_t*bb = V_c2w(b);
+	return bb;
 } // обязательно free()
 
-char* V_cmc(const uint32_t a, bool image){
+wchar_t* V_cmc(const uint32_t a, bool image){
 	char* user_profile = getenv("USERPROFILE");
 	char* b = malloc(strlen(user_profile)+16); // 1 - \0, 4 - uid/cid
 	if (image){sprintf(b, "%s\\Downloads\\i%u", user_profile, a);}
 	else {sprintf(b, "%s\\Downloads\\d%u", user_profile, a);}
     free(user_profile);
-	return b;
+	wchar_t* bb = V_c2w(b);
+	return bb;
 } // обязательно free()
 
 unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size_t* out_size) { // изображение в сырые байты
@@ -286,12 +297,13 @@ unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size
     return clean_pixels; 
 }
 
-
-bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
+// надо на wchar_t  переверсти + stbi_load_from_file сделать, чтобы киррилицу воспринимал
+bool V_liff(const wchar_t* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
     int image_width = 0, image_height = 0;
+	FILE* f= _wfopen(filename, L"rb");
 
-    unsigned char* image_data = stbi_load(filename, &image_width, &image_height, NULL, 4);
-    if (!image_data) return false;
+    unsigned char* image_data = stbi_load_from_file(f, &image_width, &image_height, NULL, 4);
+    if (!image_data) {return false; fclose(f);}
 
 
     D3D11_TEXTURE2D_DESC desc = {
@@ -313,6 +325,7 @@ bool V_liff(const char* filename, ID3D11ShaderResourceView** out_srv, int* out_w
     ID3D11Texture2D* pTexture = NULL;
     g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
     stbi_image_free(image_data);
+	fclose(f);
 
     if (!pTexture) return false;
 
@@ -585,13 +598,13 @@ int bd_save_msg(const msg* m){
     sqlite3_bind_int(stmts->save_msg, 1, m->mid);
     sqlite3_bind_int(stmts->save_msg, 2, m->uid);
     sqlite3_bind_int(stmts->save_msg, 3, m->cid);
-	char*a;
+	wchar_t*a;
 	
     if (m->type == MT_TEXT) {
         sqlite3_bind_text(stmts->save_msg, 4, m->ctnt.text, -1, SQLITE_TRANSIENT);
     } else {
 		a = V_cmc(m->mid, (m->type == MT_PHOTO) ? true : false);
-        sqlite3_bind_text(stmts->save_msg, 4, a, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(stmts->save_msg, 4, a, -1, SQLITE_TRANSIENT);
     }
 
     sqlite3_bind_int(stmts->save_msg, 5, m->type);
@@ -649,7 +662,7 @@ user bd_get_user_uid(uint32_t uid, user* uu){ // добавить проверк
 	strncpy(sqlite3_column_text(stmts->get_user_by_uid, 2), u.obn, 15);
 	u.obn[-1] = '\0';
 	int w, h;
-	char* a =V_cibp(uid, true);
+	wchar_t* a =V_cibp(uid, true);
 	V_liff(a, (ID3D11ShaderResourceView**)u.ava_ptr, &w, &h);
 	free(a);
 
@@ -673,7 +686,7 @@ user bd_get_user_name(char* name, user* uu){ // добавить проверк�
 	strncpy(sqlite3_column_text(stmts->get_user_by_name, 2), u.obn, 15);
 	u.obn[15] = '\0';
 	int w, h;
-	char* a =V_cibp(u.uid, true);
+	wchar_t* a =V_cibp(u.uid, true);
 	V_liff(a, (ID3D11ShaderResourceView **)u.ava_ptr, &w, &h);
 	free(a);
 
@@ -699,7 +712,7 @@ chat bd_get_chat_cid(uint32_t cid, chat* cc){
 	strncpy(sqlite3_column_text(stmts->get_msgs_by_cid, 3), c.obn, 15);
 	c.obn[-1] = '\0';
 	c.ls = (sqlite3_column_int(stmts->get_msgs_by_cid, 4) == 1 ? true : false);
-	char* a=V_cibp(c.cid, c.ls);
+	wchar_t* a=V_cibp(c.cid, c.ls);
 	int w, h;
 	V_liff(a, (ID3D11ShaderResourceView**)c.ava_ptr, &w, &h);
 	
@@ -725,7 +738,7 @@ chat bd_get_chat_name(char* name, chat* cc){
 	strncpy(sqlite3_column_text(stmts->get_msgs_by_name, 3), c.obn, 15);
 	c.obn[-1] = '\0';
 	c.ls = (sqlite3_column_int(stmts->get_msgs_by_name, 4) == 1 ? true : false);
-	char* a=V_cibp(c.cid, c.ls);
+	wchar_t* a=V_cibp(c.cid, c.ls);
 	int w, h;
 	V_liff(a, (ID3D11ShaderResourceView**)c.ava_ptr, &w, &h);
 	
@@ -759,7 +772,7 @@ int bd_get_msgs(sqlite3_stmt* stmt, uint16_t cid, msg* out_array, size_t max_cou
         else if (m->type == MT_PHOTO) {
 
             if (content) {
-                char*a = V_cmc(m->mid, true);
+                wchar_t*a = V_cmc(m->mid, true);
 				ID3D11ShaderResourceView* b;
 				int* w;
 				int *h;
@@ -1143,54 +1156,60 @@ static void zc_sw(short x, short y){
 	igEnd();
 }
 
-static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
-	static char l[32];
-	static char p[32];
-	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
-	igSetNextWindowPos(ImVec2(x*0.36, 0), 0);
-	igBegin("##l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
-	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
-	ImVec2 aa = igCalcTextSize("Авторизация");
-	igSetWindowFontScale(2.0f);
-	igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
-	igText("Авторизация");
-	igSetWindowFontScale(1.0f);
+// // если будут сертификаты, то логин не нужон, тк нужно просто проверить сертификат и усе
+// static void zc_login(short x, short y, ID3D11ShaderResourceView* my_srv){    
+// 	static char l[32];
+// 	static char p[32];
+// 	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
+// 	igSetNextWindowPos(ImVec2(x*0.36, 0), 0);
+// 	igBegin("##l", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+// 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
-	igPushItemWidth(x*0.271);
-	// igSetCursorPosX(x*0.37);
-	igText("Логин:");
-	igInputText("##ll", l, 32, ImGuiInputTextFlags_None);
+// 	ImVec2 aa = igCalcTextSize("Авторизация");
+// 	igSetWindowFontScale(2.0f);
+// 	igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
+// 	igText("Авторизация");
+// 	igSetWindowFontScale(1.0f);
 
-	igSpacing();
+// 	igPushItemWidth(x*0.271);
+// 	// igSetCursorPosX(x*0.37);
+// 	igText("Логин:");
+// 	igInputText("##ll", l, 32, ImGuiInputTextFlags_None);
 
-	igText("Пароль:");
-	igInputText("##lp", p, 32, ImGuiInputTextFlags_Password);
-	igPopItemWidth();
-	igSpacing(); igSpacing();
+// 	igSpacing();
 
-	igSetCursorPos(ImVec2(x*0.46, y*0.86));
-	if(igButtonEx("Войти", ImVec2(x*0.08, y*0.03))){
-		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
+// 	igText("Пароль:");
+// 	igInputText("##lp", p, 32, ImGuiInputTextFlags_Password);
+// 	igPopItemWidth();
+// 	igSpacing(); igSpacing();
+
+// 	igSetCursorPos(ImVec2(x*0.46, y*0.86));
+// 	if(igButtonEx("Войти", ImVec2(x*0.08, y*0.03))){
+// 		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
 		
-	}
+// 	}
 
-	igSetCursorPosX(x*0.37);
-	igTextDisabled("*ваш аккаунт только для вас!");
+// 	igSetCursorPosX(x*0.37);
+// 	igTextDisabled("*ваш аккаунт только для вас!");
 		
-	igEnd();
-}
+// 	igEnd();
+// }
 
+// сюда надо бы добавить генерацию ключей
 static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // db надо сюда
 	static char l[33];
 	static char p[33];
 	static char b[33];
+	static ITID* i = {0};
+	static bool ok = false;
+	static bool ii = false;
 	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
 	igSetNextWindowPos(ImVec2(x*0.36, 0), 0);
 	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){0.1f, 0.1f, 0.12f, 1.0f });
 	igPushStyleColor(ImGuiCol_Border, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
 	igPushStyleVar(ImGuiStyleVar_FrameRounding, gm.r);
-	igBegin("##r", &gm.login, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
+	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
 	// ImVec2 aa = igCalcTextSize("Авторизация");
@@ -1199,6 +1218,34 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igText("Регистрация");
 	igSetWindowFontScale(1.0f);
 
+	if(ii){
+		igImage(*i, ImVec2(x*0.2, x*0.2));
+	}
+	igSameLine();
+	igSpacing();
+	if(igButton("Выбрать аватарку")){
+		OPENFILENAMEW ofn;
+		wchar_t szFile[260] = { 0 };
+
+		ZeroMemory(&ofn, sizeof(ofn));
+		ofn.lStructSize = sizeof(ofn);
+		ofn.hwndOwner = NULL;
+		ofn.lpstrFile = szFile;
+		ofn.nMaxFile = sizeof(szFile);
+		ofn.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png;*.bmp\0";
+		ofn.nFilterIndex = 1;
+		ofn.lpstrFileTitle = NULL;
+		ofn.nMaxFileTitle = 0;
+		ofn.lpstrInitialDir = NULL;
+		ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+		if (GetOpenFileNameW(&ofn) == TRUE) {
+			// тут надо в i сохранить аватарку. ofn.lpstrFiles
+			int w, h;
+			if(!V_liff(ofn.lpstrFile, (ID3D11ShaderResourceView**)i, &w, &h)) {ok = false;}
+			else {ok = true; ii = true;}
+		}
+	}
+	
 	igPushItemWidth(x*0.271);
 	// igSetCursorPosX(x*0.37);
 	igText("Ваше имя:");
@@ -1215,12 +1262,14 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igInputText("##rb", b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
 	igPopItemWidth();
 
-	igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
+	igSpacing(); igSpacing(); igSpacing();
 	
 	
 	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
 	igSetCursorPosY(y*0.94);
 	// igSetCursorPos(ImVec2(x*0.01, -y*0.03));
+
+	// тут менять цвет при правильности данных
 	if(igButtonEx("Войти", ImVec2(x*0.271, y*0.045))){
 		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
 		
@@ -1263,7 +1312,25 @@ static void zc_settings(short x, short y){ // db надо сюда
 }
 
 int main(int argc, char** argv) {
-    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
+	// Динамическое включение четкости прямо в коде (замена манифесту)
+	void* hUser32 = GetModuleHandleA("user32.dll");
+	if (hUser32) {
+		BOOL(WINAPI* pSetProcessDpiAwarenessContext)(void*) = 
+			(BOOL(WINAPI*)(void*))GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+		if (pSetProcessDpiAwarenessContext) {
+			// -4 это значение DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+			pSetProcessDpiAwarenessContext((void*)-4); 
+		} else {
+			// Если Windows старая, используем базовый вариант
+			BOOL(WINAPI* pSetProcessDPIAware)(void) = 
+				(BOOL(WINAPI*)(void))GetProcAddress(hUser32, "SetProcessDPIAware");
+			if (pSetProcessDPIAware) pSetProcessDPIAware();
+		}
+	}
+	
+
+	// SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+	WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
     RegisterClassEx(&wc);
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Zipcord"), WS_OVERLAPPEDWINDOW, 100, 100, 1920, 1080, NULL, NULL, wc.hInstance, NULL);
 
@@ -1271,6 +1338,7 @@ int main(int argc, char** argv) {
         CleanupDeviceD3D();
         UnregisterClass(wc.lpszClassName, wc.hInstance);
         return 1;
+		
     }
 	SHCreateDirectoryExW(NULL, WCHART_PATH, NULL);
     ShowWindow(hwnd, SW_SHOWDEFAULT);
@@ -1289,7 +1357,11 @@ int main(int argc, char** argv) {
     int font_data_size = (int)((intptr_t)_binary_museo_ttf_end - (intptr_t)_binary_museo_ttf_start);
     ImFontAtlas* atlas = igGetIO()->Fonts;
     const ImWchar* ranges = ImFontAtlas_GetGlyphRangesCyrillic(atlas);
-    ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
+    // ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_museo_ttf_start, font_data_size, 24.0f, NULL, ranges);
+
+	ImFontAtlas_AddFontFromFileTTF(atlas, "C:\\Windows\\Fonts\\arial.ttf", 24.0f, NULL, ImFontAtlas_GetGlyphRangesCyrillic(atlas));
+
+
 	// int font_md3_size = (int)((intptr_t)_binary_md3_ttf_end - (intptr_t)_binary_md3_ttf_start);
 	// if (font_md3_size != 0){
 	// 	ImFontAtlas_AddFontFromMemoryTTF(atlas, _binary_md3_ttf_start, font_md3_size, 24.0f, &icons_config, mdi_ranges);	
@@ -1312,7 +1384,7 @@ int main(int argc, char** argv) {
     cImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     ImVec4 clear_color = {0.1f, 0.1f, 0.12f, 1.0f};
-
+ 
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         return -1;
@@ -1328,7 +1400,6 @@ int main(int argc, char** argv) {
     uint16_t g_cid;
 	msg msgs;
 	gm.reg = true;
-	gm.login = false;
 	gm.r = 12.0f;
 	ID3D11ShaderResourceView* aaa;
 	int w_a, h_a;
@@ -1363,14 +1434,13 @@ int main(int argc, char** argv) {
         float x = io->DisplaySize.x;
         float y = io->DisplaySize.y;
 
-		if(!gm.login && !gm.reg){
+		if(!gm.reg){
 			zc_chat(x, y, chat_schas, &msgs, 0, usrs);
 			zc_voice(x, y);
 			zc_sw(x, y);
 	    }
 		if(gm.set){zc_settings(x, y);}
 		if(gm.reg){zc_register(x, y, aaa);}
-		if(gm.login){zc_login(x, y, aaa);}
         igRender();
 
         g_pd3dDeviceContext->lpVtbl->OMSetRenderTargets(g_pd3dDeviceContext, 1, &g_mainRenderTargetView, NULL);
