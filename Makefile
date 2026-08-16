@@ -12,7 +12,7 @@ OBJS = $(SRC:.c=.o)
 
 LIBS = -L./a/ -ldcig -lwolfssl -lopus -lz -ld3d11 -ld3dcompiler -ldxgi -ldxguid \
        -luser32 -lgdi32 -lshell32 -lws2_32 -ladvapi32 -lmsimg32 -lsetupapi -limm32 -lm -lssp \
-       -lcrypt32 -ldwmapi -lstdc++ -lwinmm -lole32
+       -lcrypt32 -ldwmapi -lstdc++ -lwinmm -lole32 -luuid
 
 LDFLAGS = -w -flto=8 -Wl,--gc-sections -Wl,--as-needed -static-libgcc -static-libstdc++ -mwindows
 

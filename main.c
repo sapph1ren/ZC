@@ -10,10 +10,10 @@
 #include <shellapi.h>
 #include <pthread.h>
 #include <commdlg.h>
+#include <initguid.h>
 #include <shlobj.h>
 #include <wchar.h>
-
-
+#include <knownfolders.h>
 
 #define WOLFSSL_USER_SETTINGS
 #define WOLFSSL_LOW_MEMORY
@@ -96,6 +96,7 @@ const wchar_t* WCHART_PATH = L"C:\\Klei\\DoNotOpen";
 #define ImVec2(x, y) ((ImVec2){x, y})
 #define imu32(r, g, b, a) ((ImU32){r, g, b, a})
 #define ImVec4(x, y, a, b) ((ImVec4){x, y, a, b})
+#define IT(x) ((ImTextureRef){ ._TexID = (ImTextureID)x, ._TexData = NULL }) 
 
 static ID3D11Device*            g_pd3dDevice           = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = NULL;
@@ -213,29 +214,70 @@ user* zcbeui_finduser(user* u, user* us, size_t* uid){ // найти юзера 
 unsigned char* V_gffp(){ // получить байты файла по пути (аналог V_liff он для файлов)
 	
 }
-
-wchar_t* V_c2w(const char* a){
-	wchar_t* aa;
-	mbstowcs_s(NULL, aa, strlen(a)+1, a, _TRUNCATE);
-	return aa;
+wchar_t* V_c2w(const char* a) {
+    if (!a) return NULL;
+    
+    int size = MultiByteToWideChar(CP_UTF8, 0, a, -1, NULL, 0);
+    if (size <= 0) return NULL;
+    
+    wchar_t* aa = (wchar_t*)malloc(size * sizeof(wchar_t));
+    if (!aa) return NULL;
+    
+    MultiByteToWideChar(CP_UTF8, 0, a, -1, aa, size);
+    return aa;
 } // free()
 
-wchar_t* V_cibp(const uint32_t a, bool user){ // получить путь для аватарки
-	char* b = malloc(strlen(BLOB_PATH)+6); // 1 - \0, 4 - uid/cid
-	if (user){sprintf(b, "%s\\u%u", BLOB_PATH, a);}
-	else {sprintf(b, "%s\\c%u", BLOB_PATH, a);}
-	wchar_t*bb = V_c2w(b);
-	return bb;
+wchar_t* V_cibp(const uint32_t a, bool user) {
+    // 11 байт под максимальный uint32 (10 знаков + '\0') + 2 байта под "\\u" или "\\c"
+    size_t buf_size = strlen(BLOB_PATH) + 13; 
+    char* b = (char*)malloc(buf_size);
+    if (!b) return NULL;
+
+    if (user) {
+        snprintf(b, buf_size, "%s\\u%u", BLOB_PATH, a);
+    } else {
+        snprintf(b, buf_size, "%s\\c%u", BLOB_PATH, a);
+    }
+
+    wchar_t* bb = V_c2w(b);
+    free(b); // Исправлено: освобождаем временный clean-text буфер
+    return bb;
 } // обязательно free()
 
 wchar_t* V_cmc(const uint32_t a, bool image){
-	char* user_profile = getenv("USERPROFILE");
-	char* b = malloc(strlen(user_profile)+16); // 1 - \0, 4 - uid/cid
-	if (image){sprintf(b, "%s\\Downloads\\i%u", user_profile, a);}
-	else {sprintf(b, "%s\\Downloads\\d%u", user_profile, a);}
-    free(user_profile);
-	wchar_t* bb = V_c2w(b);
-	return bb;
+	// char* user_profile = getenv("USERPROFILE");
+	// printf(user_profile);
+	// char* b = malloc(strlen(user_profile)+16); // 1 - \0, 4 - uid/cid
+	// if (image){sprintf(b, "%s\\Downloads\\i%u", user_profile, a);}
+	// else {sprintf(b, "%s\\Downloads\\d%u", user_profile, a);}
+    // free(user_profile);
+	// wchar_t* bb = V_c2w(b);
+	// return bb;
+
+	HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr)) return L"nah";
+
+    PWSTR path = NULL;
+    wchar_t* result = NULL;
+
+    hr = SHGetKnownFolderPath(&FOLDERID_Downloads, 0, NULL, &path);
+    if (SUCCEEDED(hr)) {
+        // Выделяем буфер под: путь + '\\' + 'i'/'d' + 10 знаков uint32 + '\0'
+        size_t buf_size = wcslen(path) + 14; 
+        result = (wchar_t*)malloc(buf_size * sizeof(wchar_t));
+        
+        if (result) {
+            swprintf(result, buf_size, L"%s\\%c%u", path, image ? L'i' : L'd', a);
+        }
+        
+        // Освобождаем память Windows КЛЮЧЕВОЙ моментом ПОСЛЕ копирования данных
+        CoTaskMemFree(path); 
+    }
+
+    CoUninitialize();
+	
+	wprintf(result);
+	return result;
 } // обязательно free()
 
 unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size_t* out_size) { // изображение в сырые байты
@@ -300,12 +342,21 @@ unsigned char* V_i2b(void* texture_handle, int* out_width, int* out_height, size
 // надо на wchar_t  переверсти + stbi_load_from_file сделать, чтобы киррилицу воспринимал
 bool V_liff(const wchar_t* filename, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
     int image_width = 0, image_height = 0;
-	FILE* f= _wfopen(filename, L"rb");
+    
+    // 1. Открываем файл с поддержкой Unicode
+    FILE* f = _wfopen(filename, L"rb");
+    if (!f) {
+        return false;
+    }
 
+    // 2. Загружаем данные. Функция stbi_load_from_file сама закроет файл 'f'!
     unsigned char* image_data = stbi_load_from_file(f, &image_width, &image_height, NULL, 4);
-    if (!image_data) {return false; fclose(f);}
+    if (!image_data) {
+        // Файл уже закрыт внутри stbi_load_from_file, fclose(f) вызывать НЕЛЬЗЯ
+        return false;
+    }
 
-
+    // 3. Настройка описания текстуры Direct3D11
     D3D11_TEXTURE2D_DESC desc = {
         .Width = image_width,
         .Height = image_height,
@@ -322,27 +373,40 @@ bool V_liff(const wchar_t* filename, ID3D11ShaderResourceView** out_srv, int* ou
         .SysMemPitch = image_width * 4
     };
 
+    // 4. Создание текстуры
     ID3D11Texture2D* pTexture = NULL;
-    g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    HRESULT hr = g_pd3dDevice->lpVtbl->CreateTexture2D(g_pd3dDevice, &desc, &subResource, &pTexture);
+    
+    // Данные больше не нужны, освобождаем память
     stbi_image_free(image_data);
-	fclose(f);
 
-    if (!pTexture) return false;
+    if (FAILED(hr) || !pTexture) {
+        return false;
+    }
 
+    // 5. Создание Shader Resource View (SRV)
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
         .Format = desc.Format,
         .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
         .Texture2D.MipLevels = desc.MipLevels
     };
-    HRESULT hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
-    pTexture->lpVtbl->Release(pTexture); 
 
-    if (FAILED(hr)) return false;
+    hr = g_pd3dDevice->lpVtbl->CreateShaderResourceView(g_pd3dDevice, (ID3D11Resource*)pTexture, &srvDesc, out_srv);
+    
+    // Освобождаем локальную ссылку на текстуру
+    pTexture->lpVtbl->Release(pTexture);
 
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    // 6. Возвращаем размеры
     *out_width = image_width;
     *out_height = image_height;
+    
     return true;
 }
+
 bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height) {
 
     if (!data || len == 0) return false;
@@ -1201,7 +1265,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	static char l[33];
 	static char p[33];
 	static char b[33];
-	static ITID* i = {0};
+	static ID3D11ShaderResourceView* i = {0};
 	static bool ok = false;
 	static bool ii = false;
 	igSetNextWindowSize(ImVec2(x*0.28, y), 0);
@@ -1212,15 +1276,16 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
 	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
+	
 	// ImVec2 aa = igCalcTextSize("Авторизация");
 	igSetWindowFontScale(2.0f);
 	// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
 	igText("Регистрация");
 	igSetWindowFontScale(1.0f);
 
-	if(ii){
-		igImage(*i, ImVec2(x*0.2, x*0.2));
-	}
+	if(ii && i){
+        igImage(IT(i), ImVec2(x*0.2, x*0.2));
+    }
 	igSameLine();
 	igSpacing();
 	if(igButton("Выбрать аватарку")){
@@ -1231,7 +1296,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 		ofn.lStructSize = sizeof(ofn);
 		ofn.hwndOwner = NULL;
 		ofn.lpstrFile = szFile;
-		ofn.nMaxFile = sizeof(szFile);
+		ofn.nMaxFile = sizeof(szFile)/sizeof(wchar_t);
 		ofn.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png;*.bmp\0";
 		ofn.nFilterIndex = 1;
 		ofn.lpstrFileTitle = NULL;
@@ -1239,9 +1304,11 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 		ofn.lpstrInitialDir = NULL;
 		ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 		if (GetOpenFileNameW(&ofn) == TRUE) {
+			if (i) { i->lpVtbl->Release(i); }
 			// тут надо в i сохранить аватарку. ofn.lpstrFiles
 			int w, h;
-			if(!V_liff(ofn.lpstrFile, (ID3D11ShaderResourceView**)i, &w, &h)) {ok = false;}
+			wprintf(ofn.lpstrFile);
+			if(!V_liff(ofn.lpstrFile, &i, &w, &h)) {ok = false;}
 			else {ok = true; ii = true;}
 		}
 	}
@@ -1268,14 +1335,31 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
 	igSetCursorPosY(y*0.94);
 	// igSetCursorPos(ImVec2(x*0.01, -y*0.03));
-
+	ImU32 m1;
+	ImU32 m2;
+	ImU32 m3;
 	// тут менять цвет при правильности данных
-	if(igButtonEx("Войти", ImVec2(x*0.271, y*0.045))){
-		// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
-		
+	if(strlen(l)>0 && strlen(p) > 0 && strlen(b)==32 && ok  && i && ii ){
+		m1 =  (ImU32){0.933f, 0.333f, 0.2f, 1.0f };
+		m2 = (ImU32){0.937f, 0.325f, 0.314f, 1.0f };
+		m3 = (ImU32){0.776f, 0.157f, 0.157f, 1.0f };
 	}
+	else{
+		m1 = (ImU32){0.361f, 0.125f, 0.125f, 1.0f };
+		m2 = (ImU32){0.361f, 0.125f, 0.125f, 1.0f };
+		m3 = (ImU32){0.361f, 0.125f, 0.125f, 1.0f };
+	}
+	
+	igPushStyleColor(ImGuiCol_Button, m1);
+	igPushStyleColor(ImGuiCol_ButtonHovered, m2);
+	igPushStyleColor(ImGuiCol_ButtonActive, m3);
+	
+	if(igButtonEx("Зарегистрироваться", ImVec2(x*0.271, y*0.045))){
+			// l = логин пользователя, p = пароль пользователя сначала проверить в бд, потом на сервере
 
-	igSetCursorPosX(x*0.37);
+	}
+	igPopStyleColor(); igPopStyleColor(); igPopStyleColor();
+
 	igTextDisabled("*ваш аккаунт только для вас!");
 		
 	igEnd();
