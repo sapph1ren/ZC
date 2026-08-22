@@ -46,12 +46,15 @@
 
 // #include "curl/curl.h"
 
-#include "zlib/zlib.h"
-#include "zlib/zconf.h"
+// #include "zlib/zlib.h"
+// #include "zlib/zconf.h"
 
-#include "opus/opus.h"
-#define MINIAUDIO_IMPLEMENTATION
-#include "other/miniaudio.h"
+// #include "opus/opus.h"
+// #define MINIAUDIO_IMPLEMENTATION
+// #include "other/miniaudio.h"
+
+
+#include "main.h"
 
 #include "sqlite3.h"
 
@@ -506,6 +509,10 @@ uint32_t* V_luim(char* in, size_t* c){
     *c = idx; 
     return arr;
 } // free()
+
+void OnNetworkPacketReceived(uint8_t type, const uint8_t* payload, uint32_t len) {
+}
+
 
 // size_t Inet::curl_write_cb(void* contents, size_t size, size_t nmemb, std::string* out) {
 //     size_t total = size * nmemb;
@@ -1432,6 +1439,9 @@ int main(int argc, char** argv) {
     io->ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     static const ImWchar mdi_ranges[] = { ICON_MIN_MD, ICON_MAX_MD, 0 };  
 
+
+	zn_Init("localhost", 443, 444, NULL, gm.uid);
+	
 	ImFontConfig icons_config ={0};
     icons_config.MergeMode = true;
     icons_config.PixelSnapH = true;
@@ -1538,7 +1548,7 @@ int main(int argc, char** argv) {
     }
 
     free(chat_schas);
-
+	zn_Shutdown();
     cImGui_ImplDX11_Shutdown();
     cImGui_ImplWin32_Shutdown();
     igDestroyContext(NULL);
