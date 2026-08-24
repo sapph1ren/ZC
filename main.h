@@ -76,4 +76,3 @@ bool zn_SendSystem(const char* json_str);
 bool zn_SendMediaFile(uint64_t chat_id, uint64_t msg_id, bool is_doc, const wchar_t* file_path);
 
 #endif // NETLIB_H
-
