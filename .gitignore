@@ -1,0 +1,6 @@
+a/c/ 
+.gdb_history 
+*~ 
+*.exe 
+*.o 
+4.obj 5.obj
