@@ -1,0 +1,50 @@
+{
+  "log": { "loglevel": "error" },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "port": 10808,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "settings": { "udp": true }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [{
+          "address": "%s",
+          "port": 443,
+          "users": [
+            { 
+              "id": "%s", 
+              "email": "%u",
+              "encryption": "none" 
+            }
+          ]
+        }]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "ozon.ru:443",
+          "serverNames": ["ozon.ru"],
+          "publicKey": "J4NnJ0pVn8f8Q1VhplGvuw8kUciKh6GWJECW-DMaXTg",
+          "shortId": "f875f93a20c13555",
+          "spiderX": "/",
+          "fingerprint": "chrome"
+        }
+      }
+    },
+    { "protocol": "blackhole", "tag": "block" }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      { "type": "field", "ip": ["geoip:private"], "outboundTag": "block" }
+    ]
+  }
+}
