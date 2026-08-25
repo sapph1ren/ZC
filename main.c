@@ -1,6 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <wincrypt.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <wininet.h>
@@ -60,6 +61,8 @@ typedef void* wolfSSL_custom_ext_parse_cb;
 #define JSMN_HEADER
 #include "other/jsmn.h"
 
+// #include "wrslog.h"
+
 #include "zipcord2.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -82,7 +85,8 @@ const wchar_t* WCHART_PATH = L"C:\\Klei\\DoNotOpen";
 #define ImVec2(x, y) ((ImVec2){x, y})
 #define imu32(r, g, b, a) ((ImU32){r, g, b, a})
 #define ImVec4(x, y, a, b) ((ImVec4){x, y, a, b})
-#define IT(x) ((ImTextureRef){ ._TexID = (ImTextureID)x, ._TexData = NULL }) 
+#define IT(x) ((ImTextureRef){ ._TexID = (ImTextureID)x, ._TexData = NULL })
+#define YA_LINK "https://disk.yandex.ru/d/3NUbG0QlimvqDA"
 
 static ID3D11Device*            g_pd3dDevice           = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = NULL;
@@ -122,7 +126,7 @@ typedef struct {
     sqlite3_stmt *delete_msgs_by_cid;
     sqlite3_stmt *delete_user_by_uid;	
 } STMTS;
-STMTS* stmts;
+STMTS stmts;
 
 typedef enum {MT_TEXT, MT_PHOTO, MT_DOC, MT_VIDEO} MT_T;
 
@@ -185,7 +189,7 @@ typedef struct {
 	char* bdu_uuid;      // uuid
 } me;
 
-static me gm = {0};
+me gm = {0};
 
 void zcbeui_adduser(user* u, user* us){ // добавить юзера в хэштаблицу юзеров чата для быстрого поиска и использования аватарок
 	HASH_ADD(hh, us, uid, sizeof(size_t), u);
@@ -202,7 +206,58 @@ unsigned char* V_gffp(){ // получить байты файла по пути
 	
 }
 
+char* str_replace(const char* orig, const char* rep, const char* with) {
+    if (!orig || !rep) return NULL;
+    if (!with) with = "";
+    
+    size_t len_rep = strlen(rep);
+    if (len_rep == 0) return NULL;
+    size_t len_with = strlen(with);
+    
+    // Считаем количество вхождений
+    int count = 0;
+    const char* ins = orig;
+    while ((ins = strstr(ins, rep)) != NULL) {
+        count++;
+        ins += len_rep;
+    }
+    
+    // Безопасный расчет новой длины (без ухода size_t в минус)
+    size_t new_len = strlen(orig);
+    if (len_with >= len_rep) {
+        new_len += (len_with - len_rep) * (size_t)count;
+    } else {
+        new_len -= (len_rep - len_with) * (size_t)count;
+    }
+    
+    char* result = malloc(new_len + 1);
+    if (!result) return NULL;
+    
+    char* tmp = result;
+    const char* p = orig;
+    while (count--) {
+        ins = strstr(p, rep);
+        size_t len_front = ins - p;
+        
+        // Копируем текст до вхождения тега
+        memcpy(tmp, p, len_front);
+        tmp += len_front;
+        
+        // Копируем заменяющую строку
+        strcpy(tmp, with);
+        tmp += len_with;
+        
+        p = ins + len_rep;
+    }
+    // Копируем оставшуюся часть строки
+    strcpy(tmp, p);
+    
+    return result;
+}
+
 char* V_lj(const char* filepath, const char* server, const char* uuid, uint32_t uid) {
+    if (!filepath || !server || !uuid) return NULL;
+
     FILE* file = fopen(filepath, "rb");
     if (!file) return NULL;
 
@@ -210,21 +265,41 @@ char* V_lj(const char* filepath, const char* server, const char* uuid, uint32_t 
     long length = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    char* template_buf = (char*)malloc(length + 1);
-    if (!template_buf) { fclose(file); return NULL; }
+    if (length <= 0) {
+        fclose(file);
+        return NULL;
+    }
 
-    fread(template_buf, 1, length, file);
-    template_buf[length] = '\0';
+    char* template_buf = (char*)malloc(length + 1);
+    if (!template_buf) { 
+        fclose(file); 
+        return NULL; 
+    }
+
+    size_t read_bytes = fread(template_buf, 1, length, file);
+    template_buf[read_bytes] = '\0';
     fclose(file);
 
-    size_t out_len = length + strlen(uuid) + 32;
-    char* result_json = (char*)malloc(out_len);
-    if (!result_json) { free(template_buf); return NULL; }
+    char uid_str[32];
+    snprintf(uid_str, sizeof(uid_str), "%u", uid);
 
-    snprintf(result_json, out_len, template_buf, server, uuid, uid);
+    // Шаг 1: замена SERVER
+    char* s1 = str_replace(template_buf, "-=SERVER=-", server);
+    char* base1 = s1 ? s1 : template_buf;
+
+    // Шаг 2: замена UUID (работаем с тем, что получилось на шаге 1)
+    char* s2 = str_replace(base1, "-=UUID=-", uuid);
+    char* base2 = s2 ? s2 : base1;
+
+    // Шаг 3: замена UID
+    char* result_json = str_replace(base2, "-=UID=-", uid_str);
+
+    // Корректная очистка временной памяти
+    if (s1) free(s1);
+    if (s2) free(s2);
     free(template_buf);
 
-    return result_json; // Требует free() после использования
+    return result_json; // Внимание: вызывающий код должен сделать free(result_json)
 }
 
 wchar_t* V_c2w(const char* a) {
@@ -468,6 +543,106 @@ bool V_lifm(const unsigned char* data, size_t len, ID3D11ShaderResourceView** ou
 }
 
 
+char* V_rf(const char* filepath) {
+	printf("v_rf nachalo");
+    FILE* file = fopen(filepath, "rb");
+    if (!file) {
+        printf("Ошибка: не удалось открыть файл %s\n", filepath);
+        return NULL;
+    }
+
+    // Определяем размер файла
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    long length = ftell(file);
+    if (length < 0) {
+        fclose(file);
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+
+    // Выделяем память под размер файла + 1 для '\0'
+    char* buffer = (char*)malloc(length + 1);
+    if (!buffer) {
+        printf("Ошибка: не удалось выделить память\n");
+        fclose(file);
+        return NULL;
+    }
+
+    // Считываем строго не больше, чем размер буфера
+    size_t bytes_read = fread(buffer, 1, length, file);
+    
+    // Гарантируем нуль-терминатор в конце реально прочитанных данных
+    buffer[bytes_read] = '\0'; 
+
+    fclose(file);
+    return buffer;
+}
+
+char* V_b64e(const unsigned char* src_bytes, size_t src_len, size_t* out_str_len) {
+    if (!src_bytes || src_len == 0) return NULL;
+
+    DWORD dest_ch_count = 0;
+    
+    // Флаг CRYPT_STRING_BASE64 гарантирует чистый Base64 без переносов строк (\r\n)
+    DWORD flags = CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF;
+
+    // 1. Первый вызов: узнаем необходимый размер буфера (в символах)
+    if (!CryptBinaryToStringA(src_bytes, (DWORD)src_len, flags, NULL, &dest_ch_count)) {
+        return NULL;
+    }
+
+    // 2. Выделяем память под строку (размер в байтах равен числу символов для ASCII)
+    char* b64_str = (char*)malloc(dest_ch_count);
+    if (!b64_str) return NULL;
+
+    // 3. Второй вызов: кодируем данные в выделенный буфер
+    if (!CryptBinaryToStringA(src_bytes, (DWORD)src_len, flags, b64_str, &dest_ch_count)) {
+        free(b64_str);
+        return NULL;
+    }
+
+    if (out_str_len) {
+        *out_str_len = (size_t)dest_ch_count; // Минус завершающий '\0'
+    }
+
+    return b64_str;
+} //free()
+
+unsigned char* V_b64d(const char* b64_str, size_t* out_bytes_len) {
+    if (!b64_str) return NULL;
+
+    DWORD dest_byte_count = 0;
+    DWORD skip_chars = 0;
+    DWORD out_flags = 0;
+
+    // 1. Первый вызов: узнаем необходимый размер бинарного буфера (в байтах)
+    if (!CryptStringToBinaryA(b64_str, 0, CRYPT_STRING_BASE64, NULL, &dest_byte_count, &skip_chars, &out_flags)) {
+        return NULL;
+    }
+
+    // 2. Выделяем память под сырые байты
+    unsigned char* raw_bytes = (unsigned char*)malloc(dest_byte_count);
+    if (!raw_bytes) return NULL;
+
+    // 3. Второй вызов: декодируем строку в байты
+    if (!CryptStringToBinaryA(b64_str, 0, CRYPT_STRING_BASE64, raw_bytes, &dest_byte_count, &skip_chars, &out_flags)) {
+        free(raw_bytes);
+        return NULL;
+    }
+
+    if (out_bytes_len) {
+        *out_bytes_len = (size_t)dest_byte_count;
+    }
+
+    return raw_bytes;
+} // free()
+
 unsigned char* V_cu2c(chat* c) { // сохранить пользователей чата в бд
     size_t size = vec_size(c->usrs);
     if (!c || !c->usrs || size == 0) {
@@ -554,7 +729,7 @@ uint32_t* V_luim(char* in, size_t* c){
 // }
 
 
-char* http_get(const char* url) {
+static char* http_get(const char* url) {
     HINTERNET hInternet = InternetOpenA("ZipcordClient/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!hInternet) return NULL;
 
@@ -601,64 +776,69 @@ char* http_get(const char* url) {
     return buffer; // Требует free()
 }
 
-// Функция получения JSON-конфига с Яндекс.Диска по публичной ссылке
-char* fetch_config_from_yandex_disk(const char* public_link) {
-    // 1. Формируем URL для API Яндекс.Диска
+char* V_gsip(const char* public_link) {
     char api_url[1024];
     snprintf(api_url, sizeof(api_url), 
              "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=%s", 
              public_link);
 
-    // 2. Делаем первый запрос к API
     char* api_response = http_get(api_url);
     if (!api_response) return NULL;
 
-    // 3. Быстрый поиск поля "href":"https://..." в ответе API
     char* href_start = strstr(api_response, "\"href\":\"");
     if (!href_start) {
         free(api_response);
         return NULL;
     }
-    href_start += 8; // Смещаемся за префикс "href":"
+    href_start += 8;
 
     char* href_end = strchr(href_start, '"');
+
     if (!href_end) {
         free(api_response);
         return NULL;
     }
 
-    size_t download_url_len = href_end - href_start;
-    char* download_url = (char*)malloc(download_url_len + 1);
+    size_t raw_len = href_end - href_start;
+    char* download_url = (char*)malloc(raw_len + 1);
     if (!download_url) {
         free(api_response);
         return NULL;
     }
-    
-    strncpy(download_url, href_start, download_url_len);
-    download_url[download_url_len] = '\0';
+
+    // Заменяем '\/' на '/' для корректного URL
+    size_t j = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        if (href_start[i] == '\\' && href_start[i + 1] == '/') {
+            continue; // Пропускаем обратный слеш
+        }
+        download_url[j++] = href_start[i];
+    }
+    download_url[j] = '\0';
     free(api_response);
 
-    // 4. Скачиваем сам JSON по прямой ссылке
     char* config_json = http_get(download_url);
     free(download_url);
 
-    return config_json; // Возвращает итоговый JSON (требует free())
+    return config_json;
 }
 
+// NET OBR 
 void OnNetworkPacketReceived(uint8_t type, const uint8_t* payload, uint32_t len) {
     switch (type) {
-        case 0x01: // Текстовое сообщение
+        case 0x01: {// Текстовое сообщение
             printf("[TCP] Получен текст, размер: %zu байт\n", len);
-            break;
-        case 0x02: // Системная команда
+            break;}
+		case 0x02: { // Системная команда
+			// тут парсинг json надо
             printf("[TCP] Получена система, размер: %zu байт\n", len);
-            break;
-        case 0x03: // Медиа-чанк
+            break;}
+        case 0x03:{ // Медиа-чанк
             printf("[TCP] Получен файл-чанк, размер: %zu байт\n", len);
-            break;
-        case 0x04: // Голосовой поток (Opus/DTLS)
+            break;}
+        case 0x04: {// Голосовой поток (Opus/DTLS)
             printf("[UDP/DTLS] Получены голосовые данные: %zu байт\n", len);
-            break;
+            break;}
         default:
             printf("Неизвестный тип пакета: 0x%02X\n", type);
             break;
@@ -677,6 +857,8 @@ int BD_init(sqlite3* db) {
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS USERS(NAME TEXT, UID INTEGER, VER BOOLEAN, AVA_PATH TEXT, OBN TEXT);", NULL, NULL, NULL);
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS CHATS(NAME TEXT, CID INTEGER, MMBRS TEXT, LID INTEGER, AVA_PATH TEXT, OBN TEXT, LS BOOLEAN);", NULL, NULL, NULL);
 
+	sqlite3_exec(db, "INSERT INTO ME (NAME, UID, VER) SELECT 'zc user', 0, 0 WHERE NOT EXISTS (SELECT 1 FROM ME);", NULL, NULL, NULL);
+
     // В MSGS вместо TEXT и MEDIA делим на CONTENT (текст или путь к файлу)
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS MSGS("
                      "MID INTEGER, "
@@ -691,65 +873,65 @@ int BD_init(sqlite3* db) {
     sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_msgs_cid_mid ON MSGS(CID, MID);", NULL, NULL, NULL);
 
     // === СОХРАНЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_me, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO ME (NAME, PASSW, UID, VER, OBN, AVA) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts.save_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts->save_user, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO USERS (NAME, UID, VER, OBN) VALUES (?, ?, ?, ?);", -1, &stmts.save_user, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN, LS) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_chat, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO CHATS (NAME, CID, MMBRS, LID, OBN, LS) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts.save_chat, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts->save_msg, NULL);
+    rc = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO MSGS (MID, UID, CID, CONTENT, TYPE, TIME) VALUES (?, ?, ?, ?, ?, ?);", -1, &stmts.save_msg, NULL);
     if (rc != SQLITE_OK) return rc;
 
     // === ИЗВЛЕЧЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA FROM ME LIMIT 1;", -1, &stmts->get_me, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, PASSW, UID, VER, OBN, AVA FROM ME LIMIT 1;", -1, &stmts.get_me, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, OBN FROM USERS WHERE UID = ?;", -1, &stmts->get_user_by_uid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, VER, OBN FROM USERS WHERE UID = ?;", -1, &stmts.get_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT UID, VER, OBN FROM USERS WHERE NAME = ?;", -1, &stmts->get_user_by_name, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT UID, VER, OBN FROM USERS WHERE NAME = ?;", -1, &stmts.get_user_by_name, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN, LS FROM CHATS WHERE CID = ?;", -1, &stmts->get_chat_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT NAME, MMBRS, LID, OBN, LS FROM CHATS WHERE CID = ?;", -1, &stmts.get_chat_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "SELECT CID, MMBRS, LID, OBN, LS FROM CHATS WHERE NAME = ?;", -1, &stmts->get_chat_by_name, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT CID, MMBRS, LID, OBN, LS FROM CHATS WHERE NAME = ?;", -1, &stmts.get_chat_by_name, NULL);
     if (rc != SQLITE_OK) return rc;
     
-    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts->get_msgs_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT MID, UID, CONTENT, TYPE, TIME FROM MSGS WHERE CID = ? ORDER BY MID ASC;", -1, &stmts.get_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
     // === УДАЛЕНИЕ ===
-    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts->delete_msg_by_mid, NULL);
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE MID = ?;", -1, &stmts.delete_msg_by_mid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts->delete_msgs_by_cid, NULL);
+    rc = sqlite3_prepare_v2(db, "DELETE FROM MSGS WHERE CID = ?;", -1, &stmts.delete_msgs_by_cid, NULL);
     if (rc != SQLITE_OK) return rc;
 
-    rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts->delete_user_by_uid, NULL);
+    rc = sqlite3_prepare_v2(db, "DELETE FROM USERS WHERE UID = ?;", -1, &stmts.delete_user_by_uid, NULL);
     if (rc != SQLITE_OK) return rc;
 
     return SQLITE_OK;
 }
 
 void BD_off() {
-    if (stmts->save_me) sqlite3_finalize(stmts->save_me);
-    if (stmts->save_user) sqlite3_finalize(stmts->save_user);
-    if (stmts->save_chat) sqlite3_finalize(stmts->save_chat);
-    if (stmts->save_msg) sqlite3_finalize(stmts->save_msg);
+    if (stmts.save_me) sqlite3_finalize(stmts.save_me);
+    if (stmts.save_user) sqlite3_finalize(stmts.save_user);
+    if (stmts.save_chat) sqlite3_finalize(stmts.save_chat);
+    if (stmts.save_msg) sqlite3_finalize(stmts.save_msg);
 
-    if (stmts->get_me) sqlite3_finalize(stmts->get_me);
-    if (stmts->get_user_by_uid) sqlite3_finalize(stmts->get_user_by_uid);
-    if (stmts->get_user_by_name) sqlite3_finalize(stmts->get_user_by_name);
-    if (stmts->get_chat_by_cid) sqlite3_finalize(stmts->get_chat_by_cid);
-    if (stmts->get_chat_by_name) sqlite3_finalize(stmts->get_chat_by_name);
-    if (stmts->get_msgs_by_cid) sqlite3_finalize(stmts->get_msgs_by_cid);
+    if (stmts.get_me) sqlite3_finalize(stmts.get_me);
+    if (stmts.get_user_by_uid) sqlite3_finalize(stmts.get_user_by_uid);
+    if (stmts.get_user_by_name) sqlite3_finalize(stmts.get_user_by_name);
+    if (stmts.get_chat_by_cid) sqlite3_finalize(stmts.get_chat_by_cid);
+    if (stmts.get_chat_by_name) sqlite3_finalize(stmts.get_chat_by_name);
+    if (stmts.get_msgs_by_cid) sqlite3_finalize(stmts.get_msgs_by_cid);
 
-    if (stmts->delete_msgs_by_cid) sqlite3_finalize(stmts->delete_msgs_by_cid);
-    if (stmts->delete_user_by_uid) sqlite3_finalize(stmts->delete_user_by_uid);  
+    if (stmts.delete_msgs_by_cid) sqlite3_finalize(stmts.delete_msgs_by_cid);
+    if (stmts.delete_user_by_uid) sqlite3_finalize(stmts.delete_user_by_uid);  
 }
 
 void build_full_path(char* out_buf, size_t buf_size, const char* base_dir, const char* relative_path) {
@@ -760,131 +942,149 @@ int bd_save_me(const me* m){
     int w, h;
     size_t a;
     unsigned char* b = V_i2b(m->ava_ptr, &w, &h, &a);
-    sqlite3_bind_text(stmts->save_me, 1, m->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmts->save_me, 2, m->hash, 64, SQLITE_TRANSIENT); // Предполагается что хэш 64 байта
-    sqlite3_bind_int(stmts->save_me, 3, m->uid);
-    sqlite3_bind_int(stmts->save_me, 4, m->ver ? 1 : 0);
-    sqlite3_bind_text(stmts->save_me, 5, m->obn, -1, SQLITE_TRANSIENT); 
-    sqlite3_bind_blob(stmts->save_me, 6, b, a, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmts.save_me, 1, m->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmts.save_me, 2, m->hash, 64, SQLITE_TRANSIENT); // Предполагается что хэш 64 байта
+    sqlite3_bind_int(stmts.save_me, 3, m->uid);
+    sqlite3_bind_int(stmts.save_me, 4, m->ver ? 1 : 0);
+    sqlite3_bind_text(stmts.save_me, 5, m->obn, -1, SQLITE_TRANSIENT); 
+    sqlite3_bind_blob(stmts.save_me, 6, b, a, SQLITE_TRANSIENT);
     
-    int rc = sqlite3_step(stmts->save_me);
-    sqlite3_reset(stmts->save_me); // Не забываем сбрасывать состояние!
-    sqlite3_clear_bindings(stmts->save_me);
+    int rc = sqlite3_step(stmts.save_me);
+    sqlite3_reset(stmts.save_me); // Не забываем сбрасывать состояние!
+    sqlite3_clear_bindings(stmts.save_me);
     if (b) free(b);
     
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 int bd_save_user(const user* u){
-    sqlite3_bind_text(stmts->save_user, 1, u->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmts->save_user, 2, u->uid);
-    sqlite3_bind_int(stmts->save_user, 3, u->ver ? 1:0);
-    sqlite3_bind_text(stmts->save_user, 4, u->obn , -1, SQLITE_TRANSIENT);  
+    sqlite3_bind_text(stmts.save_user, 1, u->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts.save_user, 2, u->uid);
+    sqlite3_bind_int(stmts.save_user, 3, u->ver ? 1:0);
+    sqlite3_bind_text(stmts.save_user, 4, u->obn , -1, SQLITE_TRANSIENT);  
     
-    int rc = sqlite3_step(stmts->save_user);
-    sqlite3_reset(stmts->save_user);
-    sqlite3_clear_bindings(stmts->save_user);
+    int rc = sqlite3_step(stmts.save_user);
+    sqlite3_reset(stmts.save_user);
+    sqlite3_clear_bindings(stmts.save_user);
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 int bd_save_msg(const msg* m){
-    sqlite3_bind_int(stmts->save_msg, 1, m->mid);
-    sqlite3_bind_int(stmts->save_msg, 2, m->uid);
-    sqlite3_bind_int(stmts->save_msg, 3, m->cid);
+    sqlite3_bind_int(stmts.save_msg, 1, m->mid);
+    sqlite3_bind_int(stmts.save_msg, 2, m->uid);
+    sqlite3_bind_int(stmts.save_msg, 3, m->cid);
     wchar_t* a = NULL;
     
     if (m->type == MT_TEXT) {
-        sqlite3_bind_text(stmts->save_msg, 4, m->ctnt.text, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmts.save_msg, 4, m->ctnt.text, -1, SQLITE_TRANSIENT);
     } else {
         a = V_cmc(m->mid, (m->type == MT_PHOTO) ? true : false);
-        sqlite3_bind_text16(stmts->save_msg, 4, a, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(stmts.save_msg, 4, a, -1, SQLITE_TRANSIENT);
     }
 
-    sqlite3_bind_int(stmts->save_msg, 5, m->type);
-    sqlite3_bind_text(stmts->save_msg, 6, (const char*)m->time, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts.save_msg, 5, m->type);
+    sqlite3_bind_text(stmts.save_msg, 6, (const char*)m->time, -1, SQLITE_TRANSIENT);
     
-    int rc = sqlite3_step(stmts->save_msg);
-    sqlite3_reset(stmts->save_msg);
-    sqlite3_clear_bindings(stmts->save_msg);
+    int rc = sqlite3_step(stmts.save_msg);
+    sqlite3_reset(stmts.save_msg);
+    sqlite3_clear_bindings(stmts.save_msg);
     if (a) free(a);
     
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 int bd_save_chat(const chat* c) {
-    sqlite3_bind_text(stmts->save_chat, 1, c->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmts->save_chat, 2, c->cid);
+    sqlite3_bind_text(stmts.save_chat, 1, c->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts.save_chat, 2, c->cid);
     char* a = V_cu2c(c);
-    sqlite3_bind_text(stmts->save_chat, 3, a, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmts->save_chat, 4, c->lmid);
-    sqlite3_bind_text(stmts->save_chat, 5, c->obn, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmts->save_chat, 6, (c->ls ? 1 : 0));
+    sqlite3_bind_text(stmts.save_chat, 3, a, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts.save_chat, 4, c->lmid);
+    sqlite3_bind_text(stmts.save_chat, 5, c->obn, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmts.save_chat, 6, (c->ls ? 1 : 0));
     
-    int rc = sqlite3_step(stmts->save_chat);
-    sqlite3_reset(stmts->save_chat);
-    sqlite3_clear_bindings(stmts->save_chat);
+    int rc = sqlite3_step(stmts.save_chat);
+    sqlite3_reset(stmts.save_chat);
+    sqlite3_clear_bindings(stmts.save_chat);
     if (a) free(a);
     
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
-me bd_get_me(me* mm){
-    me m = {};
-    memset(&m, 0, sizeof(me)); 
+me bd_get_me(me* mm) {
+    me m = {0};
 
-    if (sqlite3_step(stmts->get_me) != SQLITE_ROW) {
-        sqlite3_reset(stmts->get_me);
+    // Если база пустая или нет строки
+    if (sqlite3_step(stmts.get_me) != SQLITE_ROW) {
+        sqlite3_reset(stmts.get_me);
         if (mm) *mm = m; 
         return m; 
     }
 
-    const char* name_txt = (const char*)sqlite3_column_text(stmts->get_me, 0);
-    if (name_txt) strncpy(m.name, name_txt, NICK_LEN - 1);
+    // 0: NAME
+    const char* name_txt = (const char*)sqlite3_column_text(stmts.get_me, 0);
+    if (name_txt) {
+        strncpy(m.name, name_txt, NICK_LEN - 1);
+    }
     m.name[NICK_LEN - 1] = '\0'; 
 
-    m.hash = (unsigned char*)sqlite3_column_blob(stmts->get_me, 1);
+    // 1: PASSW (HASH) — выделяем собственную память, чтобы указатель не валился после sqlite3_reset
+    const void* hash_blob = sqlite3_column_blob(stmts.get_me, 1);
+    int hash_bytes = sqlite3_column_bytes(stmts.get_me, 1);
+    if (hash_blob && hash_bytes > 0) {
+        m.hash = (unsigned char*)malloc(hash_bytes);
+        if (m.hash) {
+            memcpy(m.hash, hash_blob, hash_bytes);
+        }
+    } else {
+        m.hash = NULL;
+    }
 
-    m.uid = sqlite3_column_int(stmts->get_me, 2);
-    m.ver = (sqlite3_column_int(stmts->get_me, 3) == 1);
+    // 2: UID & 3: VER
+    m.uid = sqlite3_column_int(stmts.get_me, 2);
+    m.ver = (sqlite3_column_int(stmts.get_me, 3) == 1);
 
-    const char* obn_txt = (const char*)sqlite3_column_text(stmts->get_me, 4);
-    if (obn_txt) strncpy(m.obn, obn_txt, 15);
+    // 4: OBN
+    const char* obn_txt = (const char*)sqlite3_column_text(stmts.get_me, 4);
+    if (obn_txt) {
+        strncpy(m.obn, obn_txt, 15);
+    }
     m.obn[15] = '\0'; 
 
-    const void* ava_blob = sqlite3_column_blob(stmts->get_me, 5);
-    int ava_bytes = sqlite3_column_bytes(stmts->get_me, 5);
+    // 5: AVA
+    const void* ava_blob = sqlite3_column_blob(stmts.get_me, 5);
+    int ava_bytes = sqlite3_column_bytes(stmts.get_me, 5);
     if (ava_blob && ava_bytes > 0) {
-        V_lifm((unsigned char*)ava_blob, ava_bytes, (ID3D11ShaderResourceView **)&m.ava_ptr, &m.w, &m.h);
+        V_lifm((unsigned char*)ava_blob, ava_bytes, (ID3D11ShaderResourceView**)&m.ava_ptr, &m.w, &m.h);
     }
 
     if (mm) *mm = m; 
 
-    sqlite3_reset(stmts->get_me);
-    sqlite3_clear_bindings(stmts->get_me);
+    sqlite3_reset(stmts.get_me);
+    sqlite3_clear_bindings(stmts.get_me);
     return m;
 }
 
 user bd_get_user_uid(uint32_t uid, user* uu){
     user u = {};
     memset(&u, 0, sizeof(user));
-    sqlite3_bind_int(stmts->get_user_by_uid, 1, uid);
+    sqlite3_bind_int(stmts.get_user_by_uid, 1, uid);
         
-    if (sqlite3_step(stmts->get_user_by_uid) != SQLITE_ROW) {
-        sqlite3_reset(stmts->get_user_by_uid);
-        sqlite3_clear_bindings(stmts->get_user_by_uid);
+    if (sqlite3_step(stmts.get_user_by_uid) != SQLITE_ROW) {
+        sqlite3_reset(stmts.get_user_by_uid);
+        sqlite3_clear_bindings(stmts.get_user_by_uid);
         if (uu) *uu = u;
         return u;
     }
 
     u.uid = uid;
     
-    const char* name_txt = (const char*)sqlite3_column_text(stmts->get_user_by_uid, 0);
+    const char* name_txt = (const char*)sqlite3_column_text(stmts.get_user_by_uid, 0);
     if (name_txt) strncpy(u.name, name_txt, NICK_LEN - 1);
     u.name[NICK_LEN - 1] = '\0';
     
-    u.ver = (sqlite3_column_int(stmts->get_user_by_uid, 1) == 1);
+    u.ver = (sqlite3_column_int(stmts.get_user_by_uid, 1) == 1);
     
-    const char* obn_txt = (const char*)sqlite3_column_text(stmts->get_user_by_uid, 2);
+    const char* obn_txt = (const char*)sqlite3_column_text(stmts.get_user_by_uid, 2);
     if (obn_txt) strncpy(u.obn, obn_txt, 15);
     u.obn[15] = '\0';
     
@@ -897,8 +1097,8 @@ user bd_get_user_uid(uint32_t uid, user* uu){
 
     if (uu) *uu = u;
     
-    sqlite3_reset(stmts->get_user_by_uid);
-    sqlite3_clear_bindings(stmts->get_user_by_uid);
+    sqlite3_reset(stmts.get_user_by_uid);
+    sqlite3_clear_bindings(stmts.get_user_by_uid);
     return u;
 }
 
@@ -909,23 +1109,23 @@ user bd_get_user_name(char* name, user* uu){
     
     if (!name) return u; // Защита от передачи NULL-имени
 
-    sqlite3_bind_text(stmts->get_user_by_name, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmts.get_user_by_name, 1, name, -1, SQLITE_TRANSIENT);
         
-    if (sqlite3_step(stmts->get_user_by_name) != SQLITE_ROW) {
-        sqlite3_reset(stmts->get_user_by_name);
-        sqlite3_clear_bindings(stmts->get_user_by_name);
+    if (sqlite3_step(stmts.get_user_by_name) != SQLITE_ROW) {
+        sqlite3_reset(stmts.get_user_by_name);
+        sqlite3_clear_bindings(stmts.get_user_by_name);
         if (uu) *uu = u;
         return u;
     }
 
-    u.uid = sqlite3_column_int(stmts->get_user_by_name, 0);
+    u.uid = sqlite3_column_int(stmts.get_user_by_name, 0);
     
     strncpy(u.name, name, NICK_LEN - 1);
     u.name[NICK_LEN - 1] = '\0';   
     
-    u.ver = (sqlite3_column_int(stmts->get_user_by_name, 1) == 1);
+    u.ver = (sqlite3_column_int(stmts.get_user_by_name, 1) == 1);
     
-    const char* obn_txt = (const char*)sqlite3_column_text(stmts->get_user_by_name, 2);
+    const char* obn_txt = (const char*)sqlite3_column_text(stmts.get_user_by_name, 2);
     if (obn_txt) strncpy(u.obn, obn_txt, 15);
     u.obn[15] = '\0';
     
@@ -938,8 +1138,8 @@ user bd_get_user_name(char* name, user* uu){
 
     if (uu) *uu = u;
     
-    sqlite3_reset(stmts->get_user_by_name);
-    sqlite3_clear_bindings(stmts->get_user_by_name);
+    sqlite3_reset(stmts.get_user_by_name);
+    sqlite3_clear_bindings(stmts.get_user_by_name);
     return u;
 }
 
@@ -947,34 +1147,34 @@ chat bd_get_chat_cid(uint32_t cid, chat* cc){
     chat c = {};
     memset(&c, 0, sizeof(chat));
 
-    // ИСПРАВЛЕНО: Был ошибочно указан stmts->get_msgs_by_cid вместо get_chat_by_cid
-    sqlite3_bind_int(stmts->get_chat_by_cid, 1, cid);
+    // ИСПРАВЛЕНО: Был ошибочно указан stmts.get_msgs_by_cid вместо get_chat_by_cid
+    sqlite3_bind_int(stmts.get_chat_by_cid, 1, cid);
     
-    if (sqlite3_step(stmts->get_chat_by_cid) != SQLITE_ROW) {
-        sqlite3_reset(stmts->get_chat_by_cid);
-        sqlite3_clear_bindings(stmts->get_chat_by_cid);
+    if (sqlite3_step(stmts.get_chat_by_cid) != SQLITE_ROW) {
+        sqlite3_reset(stmts.get_chat_by_cid);
+        sqlite3_clear_bindings(stmts.get_chat_by_cid);
         if (cc) *cc = c;
         return c;
     }
 
-    const char* name_txt = (const char*)sqlite3_column_text(stmts->get_chat_by_cid, 0);
+    const char* name_txt = (const char*)sqlite3_column_text(stmts.get_chat_by_cid, 0);
     if (name_txt) strncpy(c.name, name_txt, NICK_LEN - 1);
     c.name[NICK_LEN - 1] = '\0';
     
     c.cid = cid;
     
     size_t ccc = 0;
-    const char* mmbrs_txt = (const char*)sqlite3_column_text(stmts->get_chat_by_cid, 1);
+    const char* mmbrs_txt = (const char*)sqlite3_column_text(stmts.get_chat_by_cid, 1);
     if (mmbrs_txt) c.usrs = V_luim((char*)mmbrs_txt, &ccc);
     c.uc = (uint32_t)ccc;
     
-    c.lmid = sqlite3_column_int(stmts->get_chat_by_cid, 2);
+    c.lmid = sqlite3_column_int(stmts.get_chat_by_cid, 2);
     
-    const char* obn_txt = (const char*)sqlite3_column_text(stmts->get_chat_by_cid, 3);
+    const char* obn_txt = (const char*)sqlite3_column_text(stmts.get_chat_by_cid, 3);
     if (obn_txt) strncpy(c.obn, obn_txt, 15);
     c.obn[15] = '\0';
     
-    c.ls = (sqlite3_column_int(stmts->get_chat_by_cid, 4) == 1);
+    c.ls = (sqlite3_column_int(stmts.get_chat_by_cid, 4) == 1);
     
     wchar_t* a = V_cibp(c.cid, c.ls);
     if (a) {
@@ -983,8 +1183,8 @@ chat bd_get_chat_cid(uint32_t cid, chat* cc){
         free(a); // Предполагаю, что V_cibp выделяет память, которую надо чистить
     }
     
-    sqlite3_reset(stmts->get_chat_by_cid);
-    sqlite3_clear_bindings(stmts->get_chat_by_cid);
+    sqlite3_reset(stmts.get_chat_by_cid);
+    sqlite3_clear_bindings(stmts.get_chat_by_cid);
     
     if (cc) *cc = c;
     return c;
@@ -996,12 +1196,12 @@ chat bd_get_chat_name(char* name, chat* cc){
     
     if (!name) return c;
 
-    // ИСПРАВЛЕНО: Был ошибочно указан stmts->get_msgs_by_name вместо get_chat_by_name
-    sqlite3_bind_text(stmts->get_chat_by_name, 1, name, -1, SQLITE_TRANSIENT);
+    // ИСПРАВЛЕНО: Был ошибочно указан stmts.get_msgs_by_name вместо get_chat_by_name
+    sqlite3_bind_text(stmts.get_chat_by_name, 1, name, -1, SQLITE_TRANSIENT);
     
-    if (sqlite3_step(stmts->get_chat_by_name) != SQLITE_ROW) {
-        sqlite3_reset(stmts->get_chat_by_name);
-        sqlite3_clear_bindings(stmts->get_chat_by_name);
+    if (sqlite3_step(stmts.get_chat_by_name) != SQLITE_ROW) {
+        sqlite3_reset(stmts.get_chat_by_name);
+        sqlite3_clear_bindings(stmts.get_chat_by_name);
         if (cc) *cc = c;
         return c;
     }
@@ -1009,20 +1209,20 @@ chat bd_get_chat_name(char* name, chat* cc){
     strncpy(c.name, name, NICK_LEN - 1);
     c.name[NICK_LEN - 1] = '\0';
     
-    c.cid = sqlite3_column_int(stmts->get_chat_by_name, 0);
+    c.cid = sqlite3_column_int(stmts.get_chat_by_name, 0);
     
     size_t ccc = 0;
-    const char* mmbrs_txt = (const char*)sqlite3_column_text(stmts->get_chat_by_name, 1);
+    const char* mmbrs_txt = (const char*)sqlite3_column_text(stmts.get_chat_by_name, 1);
     if (mmbrs_txt) c.usrs = V_luim((char*)mmbrs_txt, &ccc);
     c.uc = (uint32_t)ccc;
     
-    c.lmid = sqlite3_column_int(stmts->get_chat_by_name, 2);
+    c.lmid = sqlite3_column_int(stmts.get_chat_by_name, 2);
     
-    const char* obn_txt = (const char*)sqlite3_column_text(stmts->get_chat_by_name, 3);
+    const char* obn_txt = (const char*)sqlite3_column_text(stmts.get_chat_by_name, 3);
     if (obn_txt) strncpy(c.obn, obn_txt, 15);
     c.obn[15] = '\0';
     
-    c.ls = (sqlite3_column_int(stmts->get_chat_by_name, 4) == 1);
+    c.ls = (sqlite3_column_int(stmts.get_chat_by_name, 4) == 1);
     
     wchar_t* a = V_cibp(c.cid, c.ls);
     if (a) {
@@ -1031,8 +1231,8 @@ chat bd_get_chat_name(char* name, chat* cc){
         free(a);
     }
     
-    sqlite3_reset(stmts->get_chat_by_name);
-    sqlite3_clear_bindings(stmts->get_chat_by_name);
+    sqlite3_reset(stmts.get_chat_by_name);
+    sqlite3_clear_bindings(stmts.get_chat_by_name);
     
     if (cc) *cc = c;
     return c;
@@ -1117,44 +1317,40 @@ CBType v_cbt(){
     return CB_NONE;
 }
 
-char* v_gt(char* a) {
-    if (!OpenClipboard(NULL)) return "";
+wchar_t* v_gt(wchar_t* buffer, size_t max_len) {
+    if (!buffer || max_len == 0) {
+        return NULL;
+    }
+    
+    buffer[0] = L'\0';
+
+    if (!OpenClipboard(NULL)) {
+        return buffer; 
+    }
 
     if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
         if (hData != NULL) {
             wchar_t* pText = (wchar_t*)GlobalLock(hData);
             if (pText != NULL) {
+                wcsncpy(buffer, pText, max_len - 1);
+                buffer[max_len - 1] = L'\0';
+                
                 GlobalUnlock(hData);
-				uint32_t l = wcstombs(NULL, pText, 0);
-				wcstombs(a, pText, l+1);
-				free(a);
-				CloseClipboard();
-				return (char*)pText;
             }
-        }	
-
+        }
     }
-	else if(IsClipboardFormatAvailable(CF_TEXT)){
-		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-        if (hData != NULL) {
-            wchar_t* pText = (wchar_t*)GlobalLock(hData);
-            if (pText != NULL) {
-                GlobalUnlock(hData);
-				uint32_t l = wcstombs(NULL, pText, 0);
-				wcstombs(a, pText, l+1);
-				free(a);
-				CloseClipboard();
-				return (char*)pText;
-            }
-        }	
-
-	}
+   
+    CloseClipboard();
+    
+    return buffer;
 }
 
-unsigned char* v_gf(uint32_t* fc, char* p){
+unsigned char* v_gf(uint32_t* fc, char* p, size_t max_len){
+    if (!p || max_len == 0) return NULL;
     if (!OpenClipboard(NULL)) return NULL;
-	wchar_t wpath[MAX_PATH];
+    
+    wchar_t wpath[MAX_PATH];
     if (IsClipboardFormatAvailable(CF_HDROP)) {
         HANDLE hData = GetClipboardData(CF_HDROP);
         if (hData != NULL) {
@@ -1163,12 +1359,12 @@ unsigned char* v_gf(uint32_t* fc, char* p){
                 *fc = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
                 if (*fc > 0) {
                     if (DragQueryFileW(hDrop, 0, wpath, MAX_PATH)) {
-                        WideCharToMultiByte(CP_UTF8, 0, wpath, -1, p, MAX_PATH, NULL, NULL);
+                        WideCharToMultiByte(CP_UTF8, 0, wpath, -1, p, (int)max_len, NULL, NULL);
                     }
                 }
                 GlobalUnlock(hData);
                 CloseClipboard();
-                return (unsigned char*)wpath; // заглушка
+                return (unsigned char*)p; 
             }
         }
     }
@@ -1502,6 +1698,56 @@ static void zc_sw(short x, short y){
 		(((ImU32)((G)*255.0f)) << 8)  | \
 		((ImU32)((R)*255.0f))
 
+char* srat = "{\n"
+  "  \"log\": { \"loglevel\": \"error\" },\n"
+  "  \"inbounds\": [\n"
+  "    {\n"
+  "      \"tag\": \"socks-in\",\n"
+  "      \"port\": 10808,\n"
+  "      \"listen\": \"127.0.0.1\",\n"
+  "      \"protocol\": \"socks\",\n"
+  "      \"settings\": { \"udp\": true }\n"
+  "    }\n"
+  "  ],\n"
+  "  \"outbounds\": [\n"
+  "    {\n"
+  "      \"protocol\": \"vless\",\n"
+  "      \"settings\": {\n"
+  "        \"vnext\": [{\n"
+  "          \"address\": \"localhost\",\n"
+  "          \"port\": 443,\n"
+  "          \"users\": [\n"
+  "            { \n"
+  "              \"id\": \"f0c5dc91-281c-4238-90d6-4f9e000f0422\", \n"
+  "              \"email\": \"FFFFFFFF\",\n"
+  "              \"encryption\": \"none\" \n"
+  "            }\n"
+  "          ]\n"
+  "        }]\n"
+  "      },\n"
+  "      \"streamSettings\": {\n"
+  "        \"network\": \"tcp\",\n"
+  "        \"security\": \"reality\",\n"
+  "        \"realitySettings\": {\n"
+  "          \"show\": false,\n"
+  "          \"fingerprint\": \"chrome\",\n"
+  "          \"serverName\": \"ozon.ru\",\n"
+  "          \"publicKey\": \"J4NnJ0pVn8f8Q1VhplGvuw8kUciKh6GWJECW-DMaXTg\",\n"
+  "          \"shortId\": \"f875f93a20c13555\",\n"
+  "          \"spiderX\": \"/\"\n"
+  "        }\n"
+  "      }\n"
+  "    },\n"
+  "    { \"protocol\": \"blackhole\", \"tag\": \"block\" }\n"
+  "  ],\n"
+  "  \"routing\": {\n"
+  "    \"domainStrategy\": \"IPIfNonMatch\",\n"
+  "    \"rules\": [\n"
+  "      { \"type\": \"field\", \"ip\": [\"geoip:private\"], \"outboundTag\": \"block\" }\n"
+  "    ]\n"
+  "  }\n"
+"}";
+		
 static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // db надо сюда
 	static char l[33];
 	static char p[33];
@@ -1514,105 +1760,172 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 	igPushStyleColor(ImGuiCol_WindowBg, (ImU32){0.1f, 0.1f, 0.12f, 1.0f });
 	igPushStyleColor(ImGuiCol_Border, (ImU32){ 0.137f, 0.153f, 0.165f, 1.000f });
 	igPushStyleVar(ImGuiStyleVar_FrameRounding, gm.r);
-	igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal);
-	igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
-
 	
-	// ImVec2 aa = igCalcTextSize("Авторизация");
-	igSetWindowFontScale(2.0f);
-	// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
-	igText("Регистрация");
-	igSetWindowFontScale(1.0f);
-	igSpacing();
-
-	if(ii && i){
-        igImage(IT(i), ImVec2(x*0.12, x*0.12));
-    }
-	igSameLine();
-	if (igButton("Выбрать аватарку")) {
-        OPENFILENAMEW ofn;
-        wchar_t szFile[260] = { 0 };
-        ZeroMemory(&ofn, sizeof(ofn));
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = NULL;
-        ofn.lpstrFile = szFile;
-        ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
-        ofn.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png;*.bmp\0";
-        ofn.nFilterIndex = 1;
-        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-        if (GetOpenFileNameW(&ofn) == TRUE) {
-            if (i) {
-                i->lpVtbl->Release(i);
-                i = NULL; 
-            }
-
-            int w, h;
-            if (!V_liff(ofn.lpstrFile, &i, &w, &h)) {
-                ok = false;
-                ii = false;
-            } else {
-                ok = true;
-                ii = true;
-            }
-        }
-    }
+	if(igBegin("##r", &gm.reg, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_Modal)){
 	
-	igPushItemWidth(x*0.271);
-	// igSetCursorPosX(x*0.37);
-	igText("Ваше имя:");
-	igInputText("##rl", l, IM_ARRAYSIZE(l), ImGuiInputTextFlags_None);
+		igImage((ImTextureRef){ ._TexID = (ImTextureID)my_srv, ._TexData = NULL }, ImVec2(x*0.273, x*0.049));
 
-	igSpacing(); igSpacing(); igSpacing();
 
-	igText("Ваш BDU ключ:");
-	igInputText("##rb", b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
-	igPopItemWidth();
+		// ImVec2 aa = igCalcTextSize("Авторизация");
+		igSetWindowFontScale(2.0f);
+		// igSetCursorPos(ImVec2(x*0.5 - (aa.x *0.5), x*0.06));
+		igText("Регистрация");
+		igSetWindowFontScale(1.0f);
+		igSpacing();
 
-	igSpacing(); igSpacing(); igSpacing();
-	
-	
-	// igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing(); igSpacing();
-	igSetCursorPosY(y*0.92);
-	// igSetCursorPos(ImVec2(x*0.01, -y*0.03));
-	ImU32 m1;
-	ImU32 m2;
-	ImU32 m3;
-	// тут менять цвет при правильности данных
-	if (strlen(l) > 0 && strlen(b) == 36 && ok && ii) {
-		m1 = TO_IMGUI_COLOR(0.0f, 0.729f, 0.133f,   1.0f); // Button
-		m2 = TO_IMGUI_COLOR(0.004f, 0.8f, 0.149f, 1.0f); // ButtonHovered
-		m3 = TO_IMGUI_COLOR(0.106f, 0.929f, 0.255f, 1.0f); // ButtonActive
-	}
-	else {
-		m1 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
-		m2 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
-		m3 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
-	}
-	
-	igPushStyleColor(ImGuiCol_Button, m1);
-	igPushStyleColor(ImGuiCol_ButtonHovered, m2);
-	igPushStyleColor(ImGuiCol_ButtonActive, m3);
-	
-	if(igButtonEx("Зарегистрироваться", ImVec2(x*0.271, y*0.045))){
-		char* srat = V_lj("config.json", "localhost", b, 0);
-
-		if (zn_Init(srat, "localhost", 443, 444, 0)) {
-			// системный запрос на регистрацию
+		if(ii && i){
+			igImage(IT(i), ImVec2(x*0.12, x*0.12));
 		}
-		free(srat);
+		igSameLine();
+
+		int w, h;		
+		if (igButton("Выбрать аватарку")) {
+			OPENFILENAMEW ofn;
+			wchar_t szFile[260] = { 0 };
+			ZeroMemory(&ofn, sizeof(ofn));
+			ofn.lStructSize = sizeof(ofn);
+			ofn.hwndOwner = NULL;
+			ofn.lpstrFile = szFile;
+			ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+			ofn.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png;*.bmp\0";
+			ofn.nFilterIndex = 1;
+			ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+			if (GetOpenFileNameW(&ofn) == TRUE) {
+				if (i) {
+					i->lpVtbl->Release(i);
+					i = NULL; 
+				}
+
+				if (!V_liff(ofn.lpstrFile, &i, &w, &h)) {
+					ok = false;
+					ii = false;
+				} else {
+					ok = true;
+					ii = true;
+				}
+			}
+		}
+
+		igPushItemWidth(x*0.271);
+		// igSetCursorPosX(x*0.37);
+		igText("Ваше имя:");
+		igInputText("##rl", l, IM_ARRAYSIZE(l), ImGuiInputTextFlags_None);
+
+		igText("Ваш BDU ключ:");
+		igInputText("##rb", b, IM_ARRAYSIZE(b), ImGuiInputTextFlags_None);
+
+		ImU32 m1;
+		ImU32 m2;
+		ImU32 m3;
+		// тут менять цвет при правильности данных
+		if (strlen(l) > 0 && strlen(b) == 36 && ok && ii) {
+			m1 = TO_IMGUI_COLOR(0.0f, 0.729f, 0.133f,   1.0f); // Button
+			m2 = TO_IMGUI_COLOR(0.004f, 0.8f, 0.149f, 1.0f);   // ButtonHovered
+			m3 = TO_IMGUI_COLOR(0.106f, 0.929f, 0.255f, 1.0f); // ButtonActive
+		}
+		else {
+			m1 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
+			m2 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
+			m3 = TO_IMGUI_COLOR(0.361f, 0.125f, 0.125f, 1.0f);
+		}
+
+		igPushStyleColor(ImGuiCol_Button, m1);
+		igPushStyleColor(ImGuiCol_ButtonHovered, m2);
+		igPushStyleColor(ImGuiCol_ButtonActive, m3);
+
+		igSetCursorPosY(y*0.94);
+
+		if (igButtonEx("Зарегистрироваться", ImVec2(x*0.271, y*0.045))) {
+			if(strlen(l) > 0 && strlen(b) == 36 && ok && ii){
+				char* s =/* "localhost";*/V_gsip(YA_LINK);
+				if (s == NULL) {
+					printf("ploho delo");
+				}
+				printf("%s\n\n", s);
+				printf("%s\n\n", s);
+				printf("%s\n\n", s);
+				printf("%s\n\n", s);
+
+
+				// char* srat = V_lj("config.json", s, b, 0);
+				// if (srat == NULL) {
+				// 	fputs("ERROR: V_lj returned NULL!\n", log);
+				// 	fflush(log);
+				// 	fclose(log);
+				// 	//free(s);
+				// }
+
+				HANDLE hFile = CreateFileW(
+					L"C:/Temp/cfg.json",               // Путь к файлу ("cfg.json")
+					GENERIC_READ,            // Запрашиваем доступ только на чтение
+					FILE_SHARE_READ,         // Разрешаем другим программам тоже читать файл (исключает блокировку)
+					NULL,                    // Атрибуты безопасности по умолчанию
+					OPEN_EXISTING,           // Открываем только если файл уже существует
+					FILE_ATTRIBUTE_NORMAL,   // Стандартные атрибуты файла
+					NULL                     // Шаблонный файл не используется
+				);
+
+				if (hFile == INVALID_HANDLE_VALUE) {
+					DWORD err = GetLastError();
+					printf("[Win32 ERROR] Не удалось открыть '%s'. Код ошибки: %lu\n", "cfg.json", err);
+				}
+
+				// 2. Получаем точный размер файла в байтах
+				DWORD file_size = GetFileSize(hFile, NULL);
+				if (file_size == INVALID_FILE_SIZE) {
+					CloseHandle(hFile);
+				}
+
+				// 3. Выделяем память под буфер JSON (+1 байт под нуль-терминатор '\0')
+				char* json_buffer = (char*)malloc(file_size + 1);
+				if (!json_buffer) {
+					CloseHandle(hFile);
+				}
+
+				// 4. Читаем данные из файла в буфер
+				DWORD bytes_read = 0;
+				BOOL read_success = ReadFile(
+					hFile,           // Дескриптор открытого файла
+					json_buffer,     // Буфер, куда читать данные
+					file_size,       // Сколько байт прочитать
+					&bytes_read,     // Переменная, куда запишется реальное кол-во прочитанных байт
+					NULL             // Асинхронный режим не используется
+				);
+
+
+				CloseHandle(hFile);
+				// char* a = V_rf("cfg.json");
+				if (zn_Init(json_buffer, s, 443, 444, 0)) {
+					char* abv = malloc(128);
+					size_t s, s2;
+					char* aa = V_b64e(V_i2b(i, &w, &h, &s), s, &s2);
+					sprintf_s(abv, 128, "{\"t\":\"r\", \"u\":\"%s\", \"n\":\"%s\", \"i\":[\"%s\", %zu]}", b, l, aa, s);
+
+					zn_SendSystem(abv);
+					free(abv);
+					free(aa);
+
+				} else {
+					printf("kal");
+				}
+
+				if (json_buffer) free(json_buffer);
+				// if (srat) free(srat);
+				if (s) free(s);
+			}
+		}
+
+		igPopItemWidth();
+		igPopStyleColor(); igPopStyleColor(); igPopStyleColor();
+
+		igPopStyleColor();
+		igPopStyleColor();
+		igPopStyleVar();
+		igEnd();
 
 	}
-	igPopStyleColor(); igPopStyleColor(); igPopStyleColor();
-
-	igTextDisabled("*ваш аккаунт только для вас!");
-		
-	igEnd();
-	igPopStyleColor();
-	igPopStyleColor();
-	igPopStyleVar();
 }
-
 
 
 /*
@@ -1725,17 +2038,37 @@ int main(int argc, char** argv) {
 	sqlite3_open("C:/Temp/db.db", &gm.db);
 	BD_init(gm.db);
 	
-	gm = bd_get_me(&gm); // крашит тут
+	//gm = bd_get_me(&gm);
 
-	zn_ainit();
+
+	
+	// ВРЕМЕННО
+    // 
+	//
+	
+	me m = {
+		.name = "kopatyc",
+		.uid = 0,
+		.hash = NULL,
+		.r = 8.0f,
+		.ava_ptr = NULL,
+		.ver = false,
+		.obn = "25.08.2026-11:51",
+		.bdu_uuid = "aaaa",
+		
+	};
+	gm = m;
+	
+	
 	zn_SetMicrophoneMute(false);
 	
-	if (gm.uid != 0 && strlen(gm.bdu_uuid) > 0) {
+	if (gm.uid != 0 && gm.bdu_uuid != NULL && strlen(gm.bdu_uuid) ==36 ) {
 		gm.reg = false;
-
-		char* srat = V_lj("config.json", "localhost", gm.bdu_uuid, gm.uid);
-		zn_Init(srat, "localhost", 443, 444, gm.uid);
+		char* server_ip = V_gsip(YA_LINK);
+		char* srat = V_lj("config.json", server_ip, gm.bdu_uuid, gm.uid);
+		zn_Init(srat, server_ip, 443, 444, gm.uid);
 		free(srat);
+		free(server_ip);
 		
 	} else {
 		gm.reg = true;
@@ -1747,8 +2080,7 @@ int main(int argc, char** argv) {
     chat* chats = NULL;
     uint16_t g_cid;
 	msg msgs = {0};
-	gm.reg = true;
-	gm.r = 12.0f;
+	gm.r = 8.0f;
 	ID3D11ShaderResourceView* aaa;
 	int w_a, h_a;
 	V_lifm(zipcord2, 52228, &aaa, &w_a, &h_a);
@@ -1802,7 +2134,6 @@ int main(int argc, char** argv) {
     }
 
     free(chat_schas);
-	zn_aoff();
 	zn_Shutdown();
     cImGui_ImplDX11_Shutdown();
     cImGui_ImplWin32_Shutdown();

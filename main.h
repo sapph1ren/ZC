@@ -51,15 +51,6 @@ typedef struct {
 // Сюда прилетает все, что расшифровано и готово к обработке
 extern void OnNetworkPacketReceived(uint8_t type, const uint8_t* payload, uint32_t len);
 
-
-// --- API БИБЛИОТЕКИ ---
-
-// Инициализация всего (Сеть, TLS, DTLS, Audio, шифрование).
-// server_ip - IP сервера, ca_cert_path - путь до сертификата (кириллица поддерживается)
-// В main.h или netlib.h:
-
-bool zn_ainit();
-void zn_aoff();	
 bool zn_Init(const char* xray_json_config, const char* target_server_ip, uint16_t tcp_port, uint16_t udp_port, uint32_t my_user_id);
 
 // Полная очистка и остановка потоков (без утечек)
