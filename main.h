@@ -5,65 +5,47 @@
 #include <stdbool.h>
 #include <wchar.h>
 
+
 #pragma pack(push, 1)
 
-// 0x01: Текст
-typedef struct {
-    uint8_t  type;      // 0x01
-    uint16_t length;
-    uint32_t user_id;
-    uint64_t msg_id;
-    uint64_t chat_id;
-    // Дальше идут байты текста (без null-терминатора, длина = length - 20)
-} PktText;
 
-// 0x02: Системное (JSON)
-typedef struct {
-    uint8_t  type;      // 0x02
-    uint32_t length;
-    // Дальше JSON данные (длина = length)
-} PktSystem;
+typedef enum {
+    SYS_TEXT = 0, 
+    SYS_REG = 1, 
+    SYS_AUTH = 2, 
+    SYS_GMI = 3, 
+    SYS_MEDF = 4, 
+    SYS_MEDC = 5, 
+    SYS_AUDIO = 6  
+} zn_types;
 
-// 0x03: Медиа Чанк (zlib)
-typedef struct {
-    uint8_t  type;      // 0x03
-    uint16_t length;
-    uint32_t user_id;
-    uint64_t msg_id;
-    uint64_t chat_id;
-    uint8_t  is_doc;
-    uint32_t chunk_idx;
-    uint32_t total_chunks;
-    // Дальше сжатые данные (длина = length - 29)
-} PktMediaChunk;
+#define TEXT 0
+#define REG 1
+#define AUTH 2
+#define GMI 3
+#define MEDf 4
+#define MEDc 5
+#define AUDIO 6
+#define IMG 7
 
-// 0x04: Аудио (UDP/DTLS)
-typedef struct {
-    uint8_t  type;      // 0x04
-    uint16_t length;
-    uint32_t user_id;
-    // Дальше Opus фрейм (длина = length - 4)
-} PktAudio;
+bool compress_file(FILE *src, FILE*dst);
+bool decompress_file(FILE *src, FILE *dst);
 
-#pragma pack(pop)
+extern void process_tcp_data(const unsigned char* data, int length);
+extern void process_udp_data(const unsigned char* data, int length);
 
-// --- ВНЕШНИЙ КОЛБЕК (Реализуешь ТЫ в основном коде) ---
-// Сюда прилетает все, что расшифровано и готово к обработке
-extern void OnNetworkPacketReceived(uint8_t type, const uint8_t* payload, uint32_t len);
+uint32_t zn_GetUID(char* bdu);
 
-bool zn_Init(const char* xray_json_config, const char* target_server_ip, uint16_t tcp_port, uint16_t udp_port, uint32_t my_user_id);
+bool zn_Init(uint32_t uid, const char* login, const char* bdu);
 
-// Полная очистка и остановка потоков (без утечек)
 void zn_Shutdown();
 
-char* V_rf(const char* filepath);
+void zn_MuteUnMute();
 
-// Вкл/Выкл микрофона
-void zn_SetMicrophoneMute(bool mute);
+bool zn_SendText(const uint32_t uid, const uint64_t cid, const char* text);
+bool zn_SendSys(const uint32_t uid, const char* json_str, zn_types type);
+bool zn_SendFile(const uint32_t uid, const uint64_t cid, const uint64_t mid, const bool is_doc, const wchar_t* file_path);
+bool zn_SendZip(const uint32_t uid, const uint64_t cid, const uint64_t mid, wchar_t**paths);
 
-// Функции отправки (потокобезопасные)
-bool zn_SendText(uint64_t chat_id, uint64_t msg_id, const char* text);
-bool zn_SendSystem(const char* json_str);
-bool zn_SendMediaFile(uint64_t chat_id, uint64_t msg_id, bool is_doc, const wchar_t* file_path);
+#endif
 
-#endif // NETLIB_H

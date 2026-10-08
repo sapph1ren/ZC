@@ -8,7 +8,6 @@
 #include <wincrypt.h>
 #include <winreg.h>
 #include <process.h>
-#include <wchar.h>
 #include <locale.h>
 #include <shellapi.h>
 #include <pthread.h>
@@ -17,6 +16,7 @@
 #include <shlobj.h>
 #include <wchar.h>
 #include <knownfolders.h>
+
 
 typedef void* wolfSSL_custom_ext_add_cb;
 typedef void* wolfSSL_custom_ext_free_cb;
@@ -30,7 +30,8 @@ typedef void* wolfSSL_custom_ext_parse_cb;
 #include "wolfssl/wolfcrypt/asn.h"
 
 // #define MINIAUDIO_IMPLEMENTATION
-// #include "curl/curl.h"
+// #include "kal/curl.h"
+
 
 #include "zlib/zlib.h"
 #include "zlib/zconf.h"
@@ -38,7 +39,7 @@ typedef void* wolfSSL_custom_ext_parse_cb;
 #include "opus/opus.h"
 #include "other/miniaudio.h"
 
-#include "sqlite3.h"
+#include "other/sqlite3.h"
 
 #include "other/uthash.h"
 
@@ -56,6 +57,7 @@ typedef void* wolfSSL_custom_ext_parse_cb;
 #include <math.h>
 #include <tchar.h>
 #include <string.h>
+
 
 #define JSMN_IMPLEMENTATION
 #define JSMN_HEADER
@@ -86,7 +88,7 @@ const wchar_t* WCHART_PATH = L"C:\\Klei\\DoNotOpen";
 #define imu32(r, g, b, a) ((ImU32){r, g, b, a})
 #define ImVec4(x, y, a, b) ((ImVec4){x, y, a, b})
 #define IT(x) ((ImTextureRef){ ._TexID = (ImTextureID)x, ._TexData = NULL })
-#define YA_LINK "https://disk.yandex.ru/d/3NUbG0QlimvqDA"
+#define YA_LINK "https://disk.yandex.ru/i/cvgt2udewF2JiQ"
 
 static ID3D11Device*            g_pd3dDevice           = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = NULL;
@@ -137,9 +139,9 @@ typedef struct {
 	bool dost;           // доставлено ли сообщение
 	char time[16];       // время с датой
 	union{               // тут может быть только одна из трех строк, шоб меньше памяти жрало
-		char text[4096]; // текст до 4кб 
+		char* text;      // текст до 4кб 
 		struct{
-			ITID* img_ptr;// указатель на фото
+			ITID*img_ptr;// указатель на фото
 			double w, h;
 		} image;
 	} ctnt;
@@ -148,11 +150,11 @@ typedef struct {
 
 typedef struct {
 	uint32_t cid;        // айди чата
-	char name[NICK_LEN];       // название чата
+	char name[NICK_LEN]; // название чата
 	ITID* ava_ptr;       // указатель на аватарку чата
 	uint32_t* usrs;      // айди юзеров, кроме своего vec_free()
 	uint32_t uc;         // колво юзеров
-	size_t ns;         // кол-во непрочитанных
+	size_t ns;           // кол-во непрочитанных
 	char buf[4096];      // буффер для ввода сообщения (шоб сохранялось между чатами)
 	uint32_t lmid;	     // айди последнего сообщения
 	float offset;
@@ -162,7 +164,7 @@ typedef struct {
 } chat;
 
 typedef struct {
-	char name[NICK_LEN];       // имя юзера
+	char name[NICK_LEN]; // имя юзера
 	uint32_t uid;        // айди юзера
 	bool ver;            // важный бумажный
 	ITID* ava_ptr;       //	указатель на аватарку
@@ -173,7 +175,7 @@ typedef struct {
 typedef enum { SOCK_TEXT, SOCK_SYSTEM, SOCK_MEDIA, SOCK_AUDIO, SOCK_MAX } SocketType;
 
 typedef struct {
-	char name[NICK_LEN];       // имя
+	char name[NICK_LEN]; // имя
 	uint32_t uid;        // айди юзера
 	unsigned char* hash; // хэш пароля
 	float r;             // углы
@@ -436,6 +438,7 @@ bool V_liff(const wchar_t* filename, ID3D11ShaderResourceView** out_srv, int* ou
     if (!f) {
         return false;
     }
+	
 
     // 2. Загружаем данные. Функция stbi_load_from_file сама закроет файл 'f'!
     unsigned char* image_data = stbi_load_from_file(f, &image_width, &image_height, NULL, 4);
@@ -775,7 +778,7 @@ static char* http_get(const char* url) {
 
     return buffer; // Требует free()
 }
-
+ 
 char* V_gsip(const char* public_link) {
     char api_url[1024];
     snprintf(api_url, sizeof(api_url), 
@@ -823,27 +826,15 @@ char* V_gsip(const char* public_link) {
     return config_json;
 }
 
-// NET OBR 
-void OnNetworkPacketReceived(uint8_t type, const uint8_t* payload, uint32_t len) {
-    switch (type) {
-        case 0x01: {// Текстовое сообщение
-            printf("[TCP] Получен текст, размер: %zu байт\n", len);
-            break;}
-		case 0x02: { // Системная команда
-			// тут парсинг json надо
-            printf("[TCP] Получена система, размер: %zu байт\n", len);
-            break;}
-        case 0x03:{ // Медиа-чанк
-            printf("[TCP] Получен файл-чанк, размер: %zu байт\n", len);
-            break;}
-        case 0x04: {// Голосовой поток (Opus/DTLS)
-            printf("[UDP/DTLS] Получены голосовые данные: %zu байт\n", len);
-            break;}
-        default:
-            printf("Неизвестный тип пакета: 0x%02X\n", type);
-            break;
-    }
+
+void process_tcp_data(const unsigned char* data, int length){
+	
 }
+
+void process_udp_data(const unsigned char* data, int length){
+	
+}
+
 
 int BD_init(sqlite3* db) {
     int rc;
@@ -1013,11 +1004,10 @@ int bd_save_chat(const chat* c) {
 me bd_get_me(me* mm) {
     me m = {0};
 
-    // Если база пустая или нет строки
     if (sqlite3_step(stmts.get_me) != SQLITE_ROW) {
         sqlite3_reset(stmts.get_me);
         if (mm) *mm = m; 
-        return m; 
+        return gm; 
     }
 
     // 0: NAME
@@ -1346,7 +1336,7 @@ wchar_t* v_gt(wchar_t* buffer, size_t max_len) {
     return buffer;
 }
 
-unsigned char* v_gf(uint32_t* fc, char* p, size_t max_len){
+unsigned char* v_gf(uint32_t* fc, unsigned char* p, size_t max_len){
     if (!p || max_len == 0) return NULL;
     if (!OpenClipboard(NULL)) return NULL;
     
@@ -1528,6 +1518,7 @@ static void zc_chat(short x, short y, chat* c, msg* msgs, uint32_t msg_count, us
         } else {
             igTextWrapped("%s", msgi->ctnt.text);
         }
+		
 
         igSetCursorPos(ImVec2(cursorStartPos.x, cursorStartPos.y + itemH + y * 0.01f));
         igPopID();
@@ -1698,60 +1689,10 @@ static void zc_sw(short x, short y){
 		(((ImU32)((G)*255.0f)) << 8)  | \
 		((ImU32)((R)*255.0f))
 
-char* srat = "{\n"
-  "  \"log\": { \"loglevel\": \"error\" },\n"
-  "  \"inbounds\": [\n"
-  "    {\n"
-  "      \"tag\": \"socks-in\",\n"
-  "      \"port\": 10808,\n"
-  "      \"listen\": \"127.0.0.1\",\n"
-  "      \"protocol\": \"socks\",\n"
-  "      \"settings\": { \"udp\": true }\n"
-  "    }\n"
-  "  ],\n"
-  "  \"outbounds\": [\n"
-  "    {\n"
-  "      \"protocol\": \"vless\",\n"
-  "      \"settings\": {\n"
-  "        \"vnext\": [{\n"
-  "          \"address\": \"localhost\",\n"
-  "          \"port\": 443,\n"
-  "          \"users\": [\n"
-  "            { \n"
-  "              \"id\": \"f0c5dc91-281c-4238-90d6-4f9e000f0422\", \n"
-  "              \"email\": \"FFFFFFFF\",\n"
-  "              \"encryption\": \"none\" \n"
-  "            }\n"
-  "          ]\n"
-  "        }]\n"
-  "      },\n"
-  "      \"streamSettings\": {\n"
-  "        \"network\": \"tcp\",\n"
-  "        \"security\": \"reality\",\n"
-  "        \"realitySettings\": {\n"
-  "          \"show\": false,\n"
-  "          \"fingerprint\": \"chrome\",\n"
-  "          \"serverName\": \"ozon.ru\",\n"
-  "          \"publicKey\": \"J4NnJ0pVn8f8Q1VhplGvuw8kUciKh6GWJECW-DMaXTg\",\n"
-  "          \"shortId\": \"f875f93a20c13555\",\n"
-  "          \"spiderX\": \"/\"\n"
-  "        }\n"
-  "      }\n"
-  "    },\n"
-  "    { \"protocol\": \"blackhole\", \"tag\": \"block\" }\n"
-  "  ],\n"
-  "  \"routing\": {\n"
-  "    \"domainStrategy\": \"IPIfNonMatch\",\n"
-  "    \"rules\": [\n"
-  "      { \"type\": \"field\", \"ip\": [\"geoip:private\"], \"outboundTag\": \"block\" }\n"
-  "    ]\n"
-  "  }\n"
-"}";
-		
 static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // db надо сюда
 	static char l[33];
 	static char p[33];
-	static char b[64];
+	static char b[33];
 	static ID3D11ShaderResourceView* i = {0};
 	static bool ok = false;
 	static bool ii = false;
@@ -1819,7 +1760,7 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 		ImU32 m2;
 		ImU32 m3;
 		// тут менять цвет при правильности данных
-		if (strlen(l) > 0 && strlen(b) == 36 && ok && ii) {
+		if (strlen(l) > 0 && strlen(b) == 32 && ok && ii) {
 			m1 = TO_IMGUI_COLOR(0.0f, 0.729f, 0.133f,   1.0f); // Button
 			m2 = TO_IMGUI_COLOR(0.004f, 0.8f, 0.149f, 1.0f);   // ButtonHovered
 			m3 = TO_IMGUI_COLOR(0.106f, 0.929f, 0.255f, 1.0f); // ButtonActive
@@ -1834,99 +1775,32 @@ static void zc_register(short x, short y, ID3D11ShaderResourceView* my_srv){ // 
 		igPushStyleColor(ImGuiCol_ButtonHovered, m2);
 		igPushStyleColor(ImGuiCol_ButtonActive, m3);
 
-		igSetCursorPosY(y*0.94);
+		igSetCursorPosY(y*0.87);
 
 		if (igButtonEx("Зарегистрироваться", ImVec2(x*0.271, y*0.045))) {
-			if(strlen(l) > 0 && strlen(b) == 36 && ok && ii){
-				char* s =/* "localhost";*/V_gsip(YA_LINK);
-				if (s == NULL) {
-					printf("ploho delo");
+			if(strlen(l) > 0 && strlen(b) == 32 && ok && ii){
+				uint32_t uid_t = zn_GetUID(b);
+				if(uid_t != 0){
+					zn_Init(uid_t, l, b);
 				}
-				printf("%s\n\n", s);
-				printf("%s\n\n", s);
-				printf("%s\n\n", s);
-				printf("%s\n\n", s);
-
-
-				// char* srat = V_lj("config.json", s, b, 0);
-				// if (srat == NULL) {
-				// 	fputs("ERROR: V_lj returned NULL!\n", log);
-				// 	fflush(log);
-				// 	fclose(log);
-				// 	//free(s);
-				// }
-
-				HANDLE hFile = CreateFileW(
-					L"C:/Temp/cfg.json",               // Путь к файлу ("cfg.json")
-					GENERIC_READ,            // Запрашиваем доступ только на чтение
-					FILE_SHARE_READ,         // Разрешаем другим программам тоже читать файл (исключает блокировку)
-					NULL,                    // Атрибуты безопасности по умолчанию
-					OPEN_EXISTING,           // Открываем только если файл уже существует
-					FILE_ATTRIBUTE_NORMAL,   // Стандартные атрибуты файла
-					NULL                     // Шаблонный файл не используется
-				);
-
-				if (hFile == INVALID_HANDLE_VALUE) {
-					DWORD err = GetLastError();
-					printf("[Win32 ERROR] Не удалось открыть '%s'. Код ошибки: %lu\n", "cfg.json", err);
-				}
-
-				// 2. Получаем точный размер файла в байтах
-				DWORD file_size = GetFileSize(hFile, NULL);
-				if (file_size == INVALID_FILE_SIZE) {
-					CloseHandle(hFile);
-				}
-
-				// 3. Выделяем память под буфер JSON (+1 байт под нуль-терминатор '\0')
-				char* json_buffer = (char*)malloc(file_size + 1);
-				if (!json_buffer) {
-					CloseHandle(hFile);
-				}
-
-				// 4. Читаем данные из файла в буфер
-				DWORD bytes_read = 0;
-				BOOL read_success = ReadFile(
-					hFile,           // Дескриптор открытого файла
-					json_buffer,     // Буфер, куда читать данные
-					file_size,       // Сколько байт прочитать
-					&bytes_read,     // Переменная, куда запишется реальное кол-во прочитанных байт
-					NULL             // Асинхронный режим не используется
-				);
-
-
-				CloseHandle(hFile);
-				// char* a = V_rf("cfg.json");
-				if (zn_Init(json_buffer, s, 443, 444, 0)) {
-					char* abv = malloc(128);
-					size_t s, s2;
-					char* aa = V_b64e(V_i2b(i, &w, &h, &s), s, &s2);
-					sprintf_s(abv, 128, "{\"t\":\"r\", \"u\":\"%s\", \"n\":\"%s\", \"i\":[\"%s\", %zu]}", b, l, aa, s);
-
-					zn_SendSystem(abv);
-					free(abv);
-					free(aa);
-
-				} else {
-					printf("kal");
-				}
-
-				if (json_buffer) free(json_buffer);
-				// if (srat) free(srat);
-				if (s) free(s);
 			}
 		}
-
+		
 		igPopItemWidth();
 		igPopStyleColor(); igPopStyleColor(); igPopStyleColor();
 
 		igPopStyleColor();
 		igPopStyleColor();
+
+		igSetCursorPosX(igCalcTextSize("Уже есть аккаунт?").x/2);
+		igTextDisabled("Уже есть аккаунт?");
+		
+		
 		igPopStyleVar();
 		igEnd();
 
 	}
 }
-
 
 /*
 
@@ -2031,48 +1905,43 @@ int main(int argc, char** argv) {
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         return -1;
     }
-    if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
-        WSACleanup();
-        return -1;
-    }
-	sqlite3_open("C:/Temp/db.db", &gm.db);
+    // if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+    //     WSACleanup();
+    //     return -1;
+    // }
+	sqlite3_open("Windows64.db", &gm.db);
 	BD_init(gm.db);
 	
-	//gm = bd_get_me(&gm);
+	gm = bd_get_me(&gm);
 
 
-	
 	// ВРЕМЕННО
     // 
 	//
 	
-	me m = {
-		.name = "kopatyc",
-		.uid = 0,
-		.hash = NULL,
-		.r = 8.0f,
-		.ava_ptr = NULL,
-		.ver = false,
-		.obn = "25.08.2026-11:51",
-		.bdu_uuid = "aaaa",
+	// me m = {
+	// 	.name = "kopatyc",
+	// 	.uid = 0,
+	// 	.hash = NULL,
+	// 	.r = 8.0f,
+	// 	.ava_ptr = NULL,
+	// 	.ver = false,
+	// 	.obn = "25.08.2026-11:51",
+	// 	.bdu_uuid = "aaaa",
 		
-	};
-	gm = m;
-	
-	
-	zn_SetMicrophoneMute(false);
-	
-	if (gm.uid != 0 && gm.bdu_uuid != NULL && strlen(gm.bdu_uuid) ==36 ) {
+	// };
+	// gm = m;
+
+	if (gm.uid != 0) {
+		if(!zn_Init(gm.uid, gm.name, gm.bdu_uuid)){
+			return -8;
+		}
 		gm.reg = false;
-		char* server_ip = V_gsip(YA_LINK);
-		char* srat = V_lj("config.json", server_ip, gm.bdu_uuid, gm.uid);
-		zn_Init(srat, server_ip, 443, 444, gm.uid);
-		free(srat);
-		free(server_ip);
 		
 	} else {
 		gm.reg = true;
 	}
+
 	
 	
     chat* chat_schas = NULL;
@@ -2089,7 +1958,7 @@ int main(int argc, char** argv) {
     bool done = false;
     while (!done) {
         if (IsIconic(hwnd)) {
-            Sleep(50);
+			WaitMessage();
             MSG msg;
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
                 if (msg.message == WM_QUIT) done = true;
@@ -2130,7 +1999,7 @@ int main(int argc, char** argv) {
         cImGui_ImplDX11_RenderDrawData(igGetDrawData());
 
         g_pSwapChain->lpVtbl->Present(g_pSwapChain, 1, 0);
-        MsgWaitForMultipleObjects(0, NULL, FALSE, INFINITE, QS_ALLINPUT);
+        //MsgWaitForMultipleObjects(0, NULL, FALSE, INFINITE, QS_ALLINPUT);
     }
 
     free(chat_schas);
