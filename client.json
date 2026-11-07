@@ -1,0 +1,56 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "127.0.0.1",
+            "port": 443,
+            "users": [
+              {
+                "id": "YOUR_UUID_HERE",
+                "encryption": "none"
+              }
+            ]
+          }
+        ],
+        "packetEncoding": "xudp"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "serverName": "speed.cloudflare.com",
+          "publicKey": "YOUR_PUBLIC_KEY_HERE",
+          "spiderX": "/",
+          "shortId": "YOUR_SHORT_ID_HERE"
+        }
+      },
+      "tag": "proxy"
+    }
+  ]
+}

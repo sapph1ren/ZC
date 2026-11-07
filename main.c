@@ -17,6 +17,10 @@
 #include <wchar.h>
 #include <knownfolders.h>
 
+#define SystemFunction036 NTAPI SystemFunction036
+#define RtlGenRandom SystemFunction036
+BOOLEAN WINAPI RtlGenRandom(PVOID RandomBuffer, ULONG RandomBufferLength);
+
 
 typedef void* wolfSSL_custom_ext_add_cb;
 typedef void* wolfSSL_custom_ext_free_cb;
@@ -42,6 +46,8 @@ typedef void* wolfSSL_custom_ext_parse_cb;
 #include "other/sqlite3.h"
 
 #include "other/uthash.h"
+
+#include "argon2.h"
 
 #define COBJMACROS
 #include <d3d11.h>      
@@ -302,6 +308,50 @@ char* V_lj(const char* filepath, const char* server, const char* uuid, uint32_t 
     free(template_buf);
 
     return result_json; // Внимание: вызывающий код должен сделать free(result_json)
+}
+
+static int gr(BYTE *buffer, ULONG size) {
+    return RtlGenRandom(buffer, size) ? 0 : 1;
+}
+
+char* argn(const char *password) {
+    if (password == NULL) return NULL;
+
+    // Настройки Argon2id
+    uint32_t t_cost = 3;        // 3 итерации
+    uint32_t m_cost = 65536;    // 64 MB памяти
+    uint32_t parallelism = 2;   // 2 потока
+    size_t salt_len = 16;
+    size_t hash_len = 32;
+
+    // Генерация соли
+    unsigned char salt[16];
+    if (gr(salt, sizeof(salt)) != 0) {
+        fprintf(stderr, "WINAPI gen rand error\n");
+        return NULL;
+    }
+
+    // Расчет длины и выделение памяти под хэш
+    size_t encoded_len = argon2_encodedlen(t_cost, m_cost, parallelism, salt_len, hash_len, Argon2_id);
+    char *encoded_hash = (char*)malloc(encoded_len);
+    if (encoded_hash == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return NULL;
+    }
+
+    // Хэширование
+    int rc = argon2id_hash_encoded(t_cost, m_cost, parallelism, 
+                                  password, strlen(password), 
+                                  salt, salt_len, 
+                                  hash_len, encoded_hash, encoded_len);
+    
+    if (rc != ARGON2_OK) {
+        fprintf(stderr, "Argon2 error: %s\n", argon2_error_message(rc));
+        free(encoded_hash);
+        return NULL;
+    }
+
+    return encoded_hash;
 }
 
 wchar_t* V_c2w(const char* a) {
@@ -1844,12 +1894,32 @@ int main(int argc, char** argv) {
 		}
 	}
 	
+	if (AllocConsole()) {
+		FILE* fp;
+			// Перенаправляем стандартный вывод (stdout) в консоль
+		freopen_s(&fp, "CONOUT$", "w", stdout);
+			// Перенаправляем стандартный вывод ошибок (stderr) в консоль
+		freopen_s(&fp, "CONOUT$", "w", stderr);
+		// Перенаправляем стандартный ввод (stdin) из консоли (если нужен scanf/getchar)
+		freopen_s(&fp, "CONIN$", "r", stdin);
 
+			// По желанию: устанавливаем заголовок консоли
+		SetConsoleTitleA("Debug Console");
+	}
+	
+	
 	// SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Zipcord"), NULL };
     RegisterClassEx(&wc);
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Zipcord"), WS_OVERLAPPEDWINDOW, 100, 100, 1920, 1080, NULL, NULL, wc.hInstance, NULL);
 
+	char cwd[MAX_PATH];
+    GetCurrentDirectoryA(MAX_PATH, cwd);
+	char exe[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+	printf("[PATH] %s \n \n [PATH] %s ", cwd, exe);
+
+	
     if (!CreateDeviceD3D(hwnd)) {
         CleanupDeviceD3D();
         UnregisterClass(wc.lpszClassName, wc.hInstance);
